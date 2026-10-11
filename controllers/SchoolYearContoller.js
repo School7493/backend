@@ -62,6 +62,7 @@ exports.createSchoolYear = [
             });
         }
         const { label, start_date, end_date } = req.body;
+        await SchoolYear.update({status:"closed"})
 
 
         const schoolYear = await SchoolYear.create({

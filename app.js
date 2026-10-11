@@ -40,7 +40,7 @@ router.use("/school-info",SchoolInfoRouter)
 router.use("/download",DownloadRouter)
 router.use("/daycare-books-fee",DaycareBooksFee)
 router.use("/activity-logs", activityLogRoutes);
-router.use("/staff-payment", StaffPaymentRouter);
+router.use("/staff-payment", AuthenticateToken ,StaffPaymentRouter);
 router.use("/school-year",AuthenticateToken,SchoolYearRouter)
 router.use("/holiday",AuthenticateToken,HolidayRouter)
 

@@ -3,6 +3,7 @@ const cron = require("node-cron");
 const { Op } = require("sequelize");
 const Subscription = require("../models/Subscription");
 const JobLog = require("../models/JobLog");
+const { getActiveSchoolYear } = require("../utils/schoolYear");
 
 const JOB_NAME = "mark_unpaid_subscriptions";
 
@@ -33,6 +34,11 @@ async function hasRunThisMonth(period = currentPeriod()) {
 }
 
 async function runMarkUnpaidSubscriptionsJob() {
+    const schoolYear = await getActiveSchoolYear();
+    if (!schoolYear) {
+        console.log(`[${JOB_NAME}] skipped: no active school year (past end_date or none defined)`);
+        return;
+    }
     const period = currentPeriod();
 
     if (await hasRunThisMonth(period)) {

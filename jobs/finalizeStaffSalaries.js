@@ -5,6 +5,7 @@ const Supervisor = require("../models/Supervisor");
 const JobLog = require("../models/JobLog");
 const { recalculateAbsencesForPerson, STAFF_TYPE_TO_ABSENCE_TYPE } = require("../services/staffSalaryService");
 const { calculateMonthlySalaries } = require("../services/salaryService");
+const { getActiveSchoolYear } = require("../utils/schoolYear");
 
 const JOB_NAME = "finalize_monthly_payments"; // renamed: now covers staff + teachers
 
@@ -39,6 +40,11 @@ async function hasRunThisMonth(period) {
 }
 
 async function runFinalizeStaffSalariesJob() {
+    const schoolYear = await getActiveSchoolYear();
+    if (!schoolYear) {
+        console.log(`[${JOB_NAME}] skipped: no active school year (past end_date or none defined)`);
+        return;
+    }
     const now = new Date();
     const { month, year, period } = closedPeriod(now);
 

@@ -4,6 +4,7 @@ const StaffPayment = require("../models/StaffPayment");
 const Employ = require("../models/Employ");
 const Supervisor = require("../models/Supervisor");
 const { ActivityLog, User } = require("../models");
+const { createActivityLog } = require("../utils/createActivityLog");
 const getUser = async (req) => {
         const userId = req.userId;
         const user = await User.findByPk(userId);
@@ -164,16 +165,15 @@ exports.confirmStaffPayment = async (req, res) => {
             });
         }
 
-        await ActivityLog.create({
-            action: "pay",
-            entity_type: person_type === "employ" ? "employ" : "supervisor",
-            entity_id: person_id,
-            entity_name: `${person.name} ${person.last_name}`,
-            description: `تم تأكيد دفع راتب شهر ${month}/${year} بمبلغ ${salary.total_salary}`,
-            user_name: `${user.name} ${user.last_name}`,
-            user_role: user.role,
-            user_id: user.id
-        });
+        await createActivityLog(
+            req,
+            "pay",
+            person_type === "employ" ? "employ" : "supervisor",
+            person_id,
+            `${person.name} ${person.last_name}`,
+            `تم تأكيد دفع راتب شهر ${month}/${year} بمبلغ ${salary.total_salary}`,
+
+        )
 
         return res.status(200).json({
             message: "Payment confirmed successfully.",

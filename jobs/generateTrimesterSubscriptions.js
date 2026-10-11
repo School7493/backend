@@ -7,6 +7,7 @@ const Subscription = require("../models/Subscription");
 const JobLog = require("../models/JobLog");
 const SchoolYear = require("../models/SchoolYear");
 const Holiday = require("../models/Holiday");
+const { getActiveSchoolYear } = require("../utils/schoolYear");
 
 const JOB_NAME = "generate_trimester_subscriptions";
 
@@ -78,6 +79,11 @@ async function hasRunForPeriod(period) {
 }
 
 async function runTrimesterSubscriptionJob() {
+    const schoolYear = await getActiveSchoolYear();
+    if (!schoolYear) {
+        console.log(`[${JOB_NAME}] skipped: no active school year (past end_date or none defined)`);
+        return;
+    }
     const period = await currentTrimesterPeriod();
 
     if (!period) {

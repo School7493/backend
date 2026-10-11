@@ -12,7 +12,7 @@ const { startTrimesterSubscriptionJob  } = require("./jobs/generateTrimesterSubs
 const { startMarkUnpaidSubscriptionsJob  } = require("./jobs/MarkUnpaidSubscriptions");
 const { startGenerateMonthlyStaffSalariesJob } = require("./jobs/generateMonthlyStaffSalaries");
 const { startFinalizeStaffSalariesJob } = require("./jobs/finalizeStaffSalaries");
-const { runSummerBreakSubscriptionJob } = require("./jobs/summerBreakSubscriptionJob");
+const { startSummerBreakSubscriptionJob } = require("./jobs/summerBreakSubscriptionJob");
 
 
 const port = process.env.PORT || 5000;
@@ -35,12 +35,11 @@ app.use("/api/v1", appStart);
 
 app.listen(port, async () => {
   console.log(`Server started on port ${port}`);
-  startScheduler()
   startSalaryJob()
     startMonthlySubscriptionJob();
     startTrimesterSubscriptionJob ()
     startMarkUnpaidSubscriptionsJob()
     startGenerateMonthlyStaffSalariesJob()
     startFinalizeStaffSalariesJob()
-    runSummerBreakSubscriptionJob()
+    startSummerBreakSubscriptionJob()
 });

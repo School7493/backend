@@ -130,17 +130,15 @@ exports.createStudent = [
                 ? parseFloat(daycareBooksFee.uniform)
                 : 0;
 
-                const { register_fee } = (await SchoolInfo.findOne()) || {}
+            const { register_fee } = (await SchoolInfo.findOne()) || {};
 
-                const registerFee = register_fee || 70
+            // DECIMAL comes back from Sequelize as a string -> always parse
+            const registerFee = parseFloat(register_fee) || 70;
 
-            const addition =
-                bookFee +
-                uniformFee +
-                parseFloat(registerFee);
+            const addition = bookFee + uniformFee + registerFee;
 
             let totalPrice = null;
-            let normalPrice = null
+            let normalPrice = null;
 
             if (
                 payment_type === "يدفع شهريًا" ||
@@ -170,12 +168,14 @@ exports.createStudent = [
                 const baseAmount = parseFloat(price.amount) + zoneAmount;
 
                 if (priceType === "yearly") {
-                    totalPrice = baseAmount + addition + registerFee;
+                    // addition already includes registerFee
+                    totalPrice = baseAmount + addition;
+                    normalPrice = totalPrice;
                 } else {
                     const monthlyAmount = baseAmount / 2;
                     normalPrice = baseAmount;
                     totalPrice = payment_type === "يدفع بالثلاثي"
-                        ? (monthlyAmount + (baseAmount * 2) ) + addition
+                        ? (monthlyAmount + (baseAmount * 2)) + addition
                         : monthlyAmount + addition;
                 }
 
@@ -206,18 +206,16 @@ exports.createStudent = [
                 address,
             });
 
-                const date = new Date();
-                const year = date.getFullYear();
-                const month = date.getMonth() + 1; // 1-indexed
-                const day = date.getDate();
+            const date = new Date();
+            const year = date.getFullYear();
+            const month = date.getMonth() + 1; // 1-indexed
+            const day = date.getDate();
 
             const firstPeriodPass = !(month === 9 && day >= 1 && day <= 20);
 
             if (payment_type !== "غير معني بالدفع") {
-                
-
                 if (payment_type == "يدفع شهريًا" && firstPeriodPass) {
-                    await Subscription.create({
+                    const firstSubscription = await Subscription.create({
                         amount: totalPrice,
                         student_id: student.id,
                         transport,
@@ -228,6 +226,11 @@ exports.createStudent = [
                         period: `${year}-08`,
                         promotion: promotion || null,
                         siblings_count: siblings_count || null,
+                    });
+                    await StudentPayment.create({
+                        amount: totalPrice,
+                        date: new Date(),
+                        subscription_id: firstSubscription.id,
                     });
                 }
 
@@ -240,21 +243,21 @@ exports.createStudent = [
                 const period = `${periodYear}-${String(periodMonth + 1).padStart(2, "0")}`;
 
                 const subscription = await Subscription.create({
-                    amount: firstPeriodPass ? normalPrice : totalPrice  ,
+                    amount: firstPeriodPass ? normalPrice : totalPrice,
                     student_id: student.id,
                     transport,
                     is_take_book,
                     is_take_uniform,
                     zone_id: zone_id || null,
                     payment_type,
-                    period:payment_type == "يدفع شهريًا" ? period : payment_type == "يدفع بالثلاثي" ? "2026-T1" : "2026-2027",
+                    period: payment_type == "يدفع شهريًا" ? period : payment_type == "يدفع بالثلاثي" ? "2026-T1" : "2026-2027",
                     promotion: promotion || null,
                     siblings_count: siblings_count || null,
-                    status: (payment_type == "يدفع شهريًا"  && firstPeriodPass)  ? "en attente" : "payé"
+                    status: (payment_type == "يدفع شهريًا" && firstPeriodPass) ? "en attente" : "payé"
                 });
 
                 await StudentPayment.create({
-                    amount: totalPrice,
+                    amount: firstPeriodPass ? normalPrice : totalPrice,
                     date: new Date(),
                     subscription_id: subscription.id,
                 });
@@ -286,39 +289,43 @@ exports.createStudent = [
     }
 ];
 
+
 exports.getAllStudents = async (req, res) => {
     try {
         const students = await Student.findAll({
-            order: [["createdAt", "DESC"]],
             where: {
-                is_deleted: false
+                is_deleted: false,
             },
-            separate: true,
-            include: [{
-                model: Subscription,
-                as: "subscriptions",
-                attributes: [
-                    "transport",
-                    "is_take_uniform",
-                    "is_take_book",
-                    "payment_type",
-                    "payment_type",
-                    "promotion",
-                    "siblings_count"
-                ],
-                include: [{
-                    model: Zone,
-                    as: "zone",
-                    attributes: ["label"]
-                }]
-            }]
+            order: [["createdAt", "DESC"]],
+            include: [
+                {
+                    model: Subscription,
+                    as: "subscriptions",
+                    attributes: [
+                        "id",
+                        "student_id",
+                        "transport",
+                        "is_take_uniform",
+                        "is_take_book",
+                        "payment_type",
+                        "promotion",
+                        "siblings_count",
+                    ],
+                    include: [
+                        {
+                            model: Zone,
+                            as: "zone",
+                            attributes: ["id", "label"],
+                        },
+                    ],
+                },
+            ],
         });
 
         return res.status(200).json({
             message: "Students retrieved successfully.",
             students,
         });
-
     } catch (error) {
         console.error("Get students error:", error);
 
@@ -327,6 +334,7 @@ exports.getAllStudents = async (req, res) => {
         });
     }
 };
+
 
 exports.deleteStudents = async (req, res) => {
     try {
@@ -426,7 +434,7 @@ exports.updateStudent = [
 
     async (req, res) => {
         try {
-        const user = await getUser(req);
+            const user = await getUser(req);
 
             const errors = validationResult(req);
 
@@ -449,7 +457,6 @@ exports.updateStudent = [
                 gender,
                 birthday,
                 unique_id,
-                transport,
                 is_take_book,
                 is_take_uniform,
                 zone_id
@@ -483,9 +490,7 @@ exports.updateStudent = [
 
             // Check class price
             const price = await Price.findOne({
-                where: {
-                    label: classe
-                }
+                where: { label: classe }
             });
 
             if (!price) {
@@ -494,21 +499,21 @@ exports.updateStudent = [
                 });
             }
 
-            // Convert values to boolean
-            const toBool = (v) =>
-                v === true || v === "true";
+            // Zone (added / changed / removed)
+            let zone = null;
+            if (zone_id) {
+                zone = await Zone.findByPk(zone_id);
+                if (!zone) {
+                    return res.status(400).json({
+                        message: "Zone not found.",
+                    });
+                }
+            }
 
-            const transportBool = toBool(transport);
+            const toBool = (v) => v === true || v === "true";
             const bookBool = toBool(is_take_book);
             const uniformBool = toBool(is_take_uniform);
-
-            const totalPrice =
-                (
-                    parseFloat(price.amount) +
-                    (bookBool ? 10 : 0) +
-                    (transportBool ? 10 : 0) +
-                    (uniformBool ? 10 : 0)
-                ) / 2;
+            const transportBool = !!zone_id;
 
             await student.update({
                 name,
@@ -524,32 +529,60 @@ exports.updateStudent = [
                 address,
             });
 
-            // Find existing subscription
-            const subscription = await Subscription.findOne({
-                where: {
-                    student_id: student.id
-                }
+            // All subscriptions of the student, oldest first
+            const subscriptions = await Subscription.findAll({
+                where: { student_id: student.id },
+                order: [["id", "ASC"]],
             });
 
-            if (subscription) {
-                // Update existing 
-                await subscription.update({
-                    amount: totalPrice,
-                    transport: transportBool,
-                    is_take_book: bookBool,
-                    is_take_uniform: uniformBool,
-                    zone_id: zone_id || null
+            if (subscriptions.length === 0) {
+                // No subscription yet: create one with its first amount
+                const schoolInfo = await SchoolInfo.findOne();
+                const registerFee = parseFloat(schoolInfo?.register_fee) || 0;
+
+                const daycareBooksFee = await DaycareBooksFee.findOne({
+                    where: { label: classe }
                 });
-            } else {
-                // Create if student doesn't have one
+
+                const bookFee = (bookBool && daycareBooksFee && !daycareBooksFee.books_disabled)
+                    ? parseFloat(daycareBooksFee.books) || 0
+                    : 0;
+
+                const uniformFee = (uniformBool && daycareBooksFee)
+                    ? parseFloat(daycareBooksFee.uniform) || 0
+                    : 0;
+
+                const zoneAmount = zone ? parseFloat(zone.amount) || 0 : 0;
+
+                const firstAmount =
+                    (parseFloat(price.amount) + zoneAmount + bookFee + uniformFee + registerFee) / 2;
+
                 await Subscription.create({
-                    amount: totalPrice,
+                    amount: firstAmount,
                     student_id: student.id,
                     transport: transportBool,
                     is_take_book: bookBool,
                     is_take_uniform: uniformBool,
                     zone_id: zone_id || null
                 });
+            } else {
+                const [first, ...others] = subscriptions;
+
+                // First subscription: attributes only, amount unchanged
+                await first.update({
+                    transport: transportBool,
+                    is_take_book: bookBool,
+                    is_take_uniform: uniformBool,
+                    zone_id: zone_id || null
+                });
+
+                // Other subscriptions: zone/transport only, no additions, amount unchanged
+                for (const sub of others) {
+                    await sub.update({
+                        transport: transportBool,
+                        zone_id: zone_id || null
+                    });
+                }
             }
 
             await ActivityLog.create({
@@ -561,7 +594,6 @@ exports.updateStudent = [
                 user_name: `${user.name} ${user.last_name}`,
                 user_role: user.role,
                 user_id: user.id,
-               
             });
 
             return res.status(200).json({

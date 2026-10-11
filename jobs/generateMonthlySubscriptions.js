@@ -5,6 +5,7 @@ const Subscription = require("../models/Subscription");
 const JobLog = require("../models/JobLog");
 const Price = require("../models/TuitionFee");
 const Zone = require("../models/Zone");
+const { getActiveSchoolYear } = require("../utils/schoolYear");
 
 const JOB_NAME = "generate_monthly_subscriptions";
 const MONTHLY_PLAN = "يدفع شهريًا";
@@ -60,6 +61,11 @@ function normalMonthPriceFromCache({ classe, zone_id, promotion }, priceByClass,
 }
 
 async function runMonthlySubscriptionJob() {
+    const schoolYear = await getActiveSchoolYear();
+    if (!schoolYear) {
+        console.log(`[${JOB_NAME}] skipped: no active school year (past end_date or none defined)`);
+        return;
+    }
     const period = currentPeriod();
 
     if (!isSchoolMonth()) {

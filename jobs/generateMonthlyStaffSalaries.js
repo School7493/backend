@@ -6,6 +6,7 @@ const Teacher = require("../models/Teacher");
 const TeacherPayment = require("../models/TeacherPayment");
 const JobLog = require("../models/JobLog");
 const { getPayPeriodForDateOnly } = require("../services/salaryService");
+const { getActiveSchoolYear } = require("../utils/schoolYear");
 
 const JOB_NAME = "generate_monthly_payments"; // renamed: now covers staff + teachers
 
@@ -34,6 +35,13 @@ async function hasRunThisMonth(period) {
 }
 
 async function runGenerateMonthlyStaffSalariesJob() {
+
+    const schoolYear = await getActiveSchoolYear();
+    if (!schoolYear) {
+        console.log(`[${JOB_NAME}] skipped: no active school year (past end_date or none defined)`);
+        return;
+    }
+
     const { month, year, period } = periodString();
 
     // Claim the period FIRST, atomically, before touching any data.

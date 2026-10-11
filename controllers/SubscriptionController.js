@@ -16,6 +16,11 @@ exports.getAllSubscription = async (req,res) => {
                     model:Student,
                     as:"student",
                     attributes:["id","name","last_name","class","unique_id"]
+                },
+                {
+                    model:StudentPayment,
+                    as:"studentPayment",
+                    attributes:["id","amount","date"]
                 }
             ]
         });
