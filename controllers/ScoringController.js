@@ -1,6 +1,12 @@
-const { body, validationResult } = require("express-validator");
+const { body, validationResult, param } = require("express-validator");
 const Teacher = require("../models/Teacher");
 const Scoring = require("../models/Scoring");
+const { Op, fn, col } = require("sequelize");
+const {
+  getPayPeriodBounds,
+  getPayYearBounds,
+  getPayYearOf,
+} = require("../utils/period");
 
 
 
@@ -91,27 +97,194 @@ exports.createScoring = [
     }
 ];
 
+
 exports.getAllScoring = async (req, res) => {
-    try {
-        const scoring = await Scoring.findAll({
-            include:[{
-                model:Teacher,
-                as:"scoringTeacher",
-                attributes:["id","name","last_name"]
-            }],
-            order: [["createdAt", "DESC"]],
-        });
+  try {
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 8, 1), 100);
+    const offset = (page - 1) * limit;
 
-        return res.status(200).json({
-            message: "scoring retrieved successfully.",
-            scoring,
-        });
+    const year = parseInt(req.query.year, 10) || null;
+    const month = parseInt(req.query.month, 10) || null; // 1-12, only used with year
+    const sense = req.query.sense || null;
+    const search = (req.query.search || "").trim();
 
-    } catch (error) {
-        console.error("Get scoring error:", error);
+    const where = {};
 
-        return res.status(500).json({
-            message: "Server error.",
-        });
+    if (year) {
+      const { start, endExclusive } =
+        month && month >= 1 && month <= 12
+          ? getPayPeriodBounds(year, month)
+          : getPayYearBounds(year);
+      where.date = { [Op.gte]: start, [Op.lt]: endExclusive };
     }
+
+    if (sense) where.sense = sense;
+
+    if (search) {
+      const like = { [Op.like]: `%${search}%` };
+      where[Op.or] = [
+        { "$scoringTeacher.name$": like },
+        { "$scoringTeacher.last_name$": like },
+        { noticed: like },
+      ];
+    }
+
+    const { count, rows } = await Scoring.findAndCountAll({
+      where,
+      include: [
+        {
+          model: Teacher,
+          as: "scoringTeacher",
+          attributes: ["id", "name", "last_name"],
+        },
+      ],
+      order: [
+        ["date", "DESC"],
+        ["createdAt", "DESC"],
+      ],
+      limit,
+      offset,
+      distinct: true,
+    });
+
+    // years that actually exist in the database (pay years)
+    const dateRows = await Scoring.findAll({
+      attributes: [[fn("DISTINCT", col("date")), "date"]],
+      raw: true,
+    });
+    const years = [
+      ...new Set(dateRows.filter((r) => r.date).map((r) => getPayYearOf(r.date))),
+    ].sort((a, b) => b - a);
+
+    return res.status(200).json({
+      message: "scoring retrieved successfully.",
+      scoring: rows,
+      years,
+      pagination: {
+        total: count,
+        page,
+        limit,
+        totalPages: Math.max(Math.ceil(count / limit), 1),
+      },
+    });
+  } catch (error) {
+    console.error("Get scoring error:", error);
+    return res.status(500).json({ message: "Server error." });
+  }
 };
+
+const scoringRules = [
+    body("noticed")
+        .optional({ checkFalsy: true })
+        .trim()
+        .isLength({ max: 255 })
+        .withMessage("Noticed must not exceed 255 characters."),
+
+    body("sense")
+        .notEmpty()
+        .withMessage("Sense is required.")
+        .isIn(["دخول", "خروج"])
+        .withMessage("Invalid sense."),
+
+    body("date")
+        .notEmpty()
+        .withMessage("Date is required.")
+        .isISO8601()
+        .withMessage("Invalid date."),
+
+    body("time")
+        .notEmpty()
+        .withMessage("Time is required.")
+        .matches(/^([01]\d|2[0-3]):([0-5]\d)(:[0-5]\d)?$/)
+        .withMessage("Invalid time."),
+
+    body("justification")
+        .notEmpty()
+        .withMessage("Justification is required.")
+        .isBoolean()
+        .withMessage("Justification must be true or false."),
+
+    body("teacher_id")
+        .notEmpty()
+        .withMessage("Teacher ID is required.")
+        .isInt()
+        .withMessage("Invalid teacher ID."),
+];
+
+exports.updateScoring = [
+    param("id").isInt().withMessage("Invalid scoring ID."),
+    ...scoringRules,
+
+    async (req, res) => {
+        try {
+            const errors = validationResult(req);
+
+            if (!errors.isEmpty()) {
+                return res.status(400).json({
+                    message: "Validation failed",
+                    errors: errors.array(),
+                });
+            }
+
+            const { id } = req.params;
+            const { noticed, sense, date, time, justification, teacher_id } = req.body;
+
+            const scoring = await Scoring.findByPk(id);
+            if (!scoring) {
+                return res.status(404).json({ message: "Scoring not found." });
+            }
+
+            const teacher = await Teacher.findByPk(teacher_id);
+            if (!teacher) {
+                return res.status(404).json({ message: "Teacher not found." });
+            }
+
+            await scoring.update({
+                noticed,
+                sense,
+                date,
+                time,
+                justification,
+                teacher_id,
+            });
+
+            return res.status(200).json({
+                message: "Scoring updated successfully.",
+                scoring,
+            });
+        } catch (error) {
+            console.error("Update scoring error:", error);
+            return res.status(500).json({ message: "Server error." });
+        }
+    },
+];
+
+exports.deleteScoring = [
+    param("id").isInt().withMessage("Invalid scoring ID."),
+
+    async (req, res) => {
+        try {
+            const errors = validationResult(req);
+
+            if (!errors.isEmpty()) {
+                return res.status(400).json({
+                    message: "Validation failed",
+                    errors: errors.array(),
+                });
+            }
+
+            const scoring = await Scoring.findByPk(req.params.id);
+            if (!scoring) {
+                return res.status(404).json({ message: "Scoring not found." });
+            }
+
+            await scoring.destroy();
+
+            return res.status(200).json({ message: "Scoring deleted successfully." });
+        } catch (error) {
+            console.error("Delete scoring error:", error);
+            return res.status(500).json({ message: "Server error." });
+        }
+    },
+];

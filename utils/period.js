@@ -54,4 +54,60 @@ function getPayPeriod(referenceDate = new Date()) {
   return { month, year, periodStart, periodEnd, daysInPeriod, payDate };
 }
 
-module.exports = { getPeriodRange, getYearPeriods, MONTH_LABELS, getPayPeriod };
+const pad = (n) => String(n).padStart(2, "0");
+const fmt = (y, m, d) => `${y}-${pad(m)}-${pad(d)}`;
+
+// [start, endExclusive) as YYYY-MM-DD strings. Month period = 21st of previous month -> 20th of month (inclusive)
+function getPayPeriodBounds(year, month) {
+  const prevYear = month === 1 ? year - 1 : year;
+  const prevMonth = month === 1 ? 12 : month - 1;
+  return {
+    start: fmt(prevYear, prevMonth, 21),
+    endExclusive: fmt(year, month, 21),
+  };
+}
+
+// Pay year = 21 Dec (year-1) -> 20 Dec (year)
+function getPayYearBounds(year) {
+  return {
+    start: fmt(year - 1, 12, 21),
+    endExclusive: fmt(year, 12, 21),
+  };
+}
+
+// Which pay year a date belongs to (day > 20 in December => next year)
+function getPayYearOf(value) {
+  let y, m, d;
+  if (typeof value === "string") {
+    [y, m, d] = value.slice(0, 10).split("-").map(Number);
+  } else {
+    const dt = new Date(value);
+    y = dt.getFullYear();
+    m = dt.getMonth() + 1;
+    d = dt.getDate();
+  }
+  return m === 12 && d > 20 ? y + 1 : y;
+}
+// "YYYY-MM" where MM is the month the billing window STARTS (20th -> 20th)
+function getCurrentPeriod(date = new Date()) {
+  let year = date.getFullYear();
+  let month = date.getMonth();
+  if (date.getDate() < 20) {
+    month -= 1;
+    if (month < 0) { month = 11; year -= 1; }
+  }
+  return `${year}-${String(month + 1).padStart(2, "0")}`;
+}
+// add getCurrentPeriod to module.exports
+
+module.exports = {
+  getPeriodRange,
+  getYearPeriods,
+  MONTH_LABELS,
+  getPayPeriod,
+  getPayPeriodBounds,
+  getPayYearBounds,
+  getPayYearOf,
+  getCurrentPeriod
+};
+
