@@ -15,7 +15,8 @@ const DaycareBooksFee = sequelize.define("daycare_books_fees", {
             "annee3",
             "annee4",
             "annee5",
-            "annee6"
+            "annee6",
+            "annee6_ty"
         ),
         allowNull: false
     },
@@ -37,6 +38,10 @@ const DaycareBooksFee = sequelize.define("daycare_books_fees", {
         type: DataTypes.BOOLEAN,
         allowNull: false,
         defaultValue: false
+    },
+    books_unit_price: {
+        type: DataTypes.DECIMAL(10, 2),
+        defaultValue: 0
     },
     order: {
         type: DataTypes.INTEGER,

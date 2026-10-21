@@ -1,6 +1,6 @@
 const { validationResult, body, query } = require("express-validator");
 const Student = require("../models/Student");
-const { Subscription, StudentPayment } = require("../models");
+const { Subscription, StudentPayment, StudentGroup, Group } = require("../models");
 const Price = require("../models/TuitionFee");
 const Zone = require("../models/Zone");
 const { Op } = require("sequelize");
@@ -8,11 +8,32 @@ const DaycareBooksFee = require("../models/DaycareBooksFee");
 const ActivityLog = require("../models/ActivityLog");
 const User = require("../models/Users");
 const SchoolInfo = require("../models/SchoolInfo");
+const SchoolYear = require("../models/SchoolYear");
 const getUser = async (req) => {
         const userId = req.userId;
         const user = await User.findByPk(userId);
         return user
 }
+
+// Keep your existing imports at the top of the file (body, validationResult, Op,
+// Student, Subscription, StudentPayment, StudentGroup, Group, SchoolYear, Price, Zone,
+// DaycareBooksFee, SchoolInfo, ActivityLog, getUser ...).
+
+// The form sends booleans as the strings "true" / "false"
+// Keep your existing imports at the top of the file (body, validationResult, Op,
+// Student, Subscription, StudentPayment, StudentGroup, Group, SchoolYear, Price, Zone,
+// DaycareBooksFee, SchoolInfo, ActivityLog, getUser ...).
+
+// The form sends booleans as the strings "true" / "false"
+const toBool = (v) => v === true || v === "true";
+
+// "632 145 20" -> "63214520"
+const stripSpaces = (v) => (typeof v === "string" ? v.replace(/\s+/g, "") : v);
+
+// 6th year, group "أ" (id 22) uses the "نموذجي" pricing
+const SIXTH_YEAR = "السنة السادسة";
+const SIXTH_YEAR_MODEL = "السنة السادسة نموذجي";
+const SIXTH_YEAR_MODEL_GROUP_ID = 22;
 
 exports.createStudent = [
     body("name")
@@ -33,15 +54,18 @@ exports.createStudent = [
         .optional()
         .trim(),
 
+    // the form allows spaces in phone numbers, so remove them before checking
     body("father_phone")
         .optional({ checkFalsy: true })
         .trim()
+        .customSanitizer(stripSpaces)
         .matches(/^\d{8}$/)
         .withMessage("Invalid father phone number."),
 
     body("mother_phone")
         .optional({ checkFalsy: true })
         .trim()
+        .customSanitizer(stripSpaces)
         .matches(/^\d{8}$/)
         .withMessage("Invalid mother phone number."),
 
@@ -69,6 +93,29 @@ exports.createStudent = [
         .optional({ checkFalsy: true })
         .isIn(["discount_50", "free"])
         .withMessage("Invalid promotion type."),
+
+    // amount paid now (only used for yearly payment, = partial payment)
+    body("amount")
+        .optional({ checkFalsy: true })
+        .isFloat({ min: 0 })
+        .withMessage("Invalid amount."),
+
+    body("book_type")
+        .optional({ checkFalsy: true })
+        .isIn(["one", "all", "same"])
+        .withMessage("Invalid book type."),
+
+    // only checked when the student takes books AND the type is "same"
+    body("books_count")
+        .if((value, { req }) => toBool(req.body.is_take_book) && req.body.book_type === "same")
+        .isInt({ min: 2, max: 20 })
+        .withMessage("Books count must be between 2 and 20.")
+        .toInt(),
+
+    body("group_id")
+        .optional({ checkFalsy: true })
+        .isInt({ min: 1 })
+        .withMessage("Invalid group."),
 
     async (req, res) => {
         try {
@@ -102,6 +149,10 @@ exports.createStudent = [
                 zone_id,
                 promotion,
                 siblings_count,
+                amount,
+                book_type,
+                books_count,
+                group_id,
             } = req.body;
 
             if (unique_id != null && unique_id !== "") {
@@ -120,13 +171,87 @@ exports.createStudent = [
                 });
             }
 
-            const toBool = (v) => v === true || v === "true";
+            // ---- normalized flags (strings from the form -> real booleans) ----
+            const hasTransport = toBool(transport);
+            const takesBook = toBool(is_take_book);
+            const takesUniform = toBool(is_take_uniform);
 
-            const bookFee = (toBool(is_take_book) && !daycareBooksFee.books_disabled)
-                ? parseFloat(daycareBooksFee.books)
-                : 0;
+            // ---- books: type + count (count only exists for "same") ----
+            const savedBookType = takesBook ? (book_type || null) : null;
+            const isSameBooks = takesBook && savedBookType === "same";
+            const savedBooksCount = isSameBooks ? parseInt(books_count, 10) : null;
 
-            const uniformFee = toBool(is_take_uniform)
+            // ---- optional group (checked BEFORE creating the student) ----
+            let group = null;
+            let schoolYear = null;
+
+            if (group_id) {
+                group = await Group.findByPk(group_id);
+                if (!group) {
+                    return res.status(400).json({
+                        message: "that group not exist.",
+                    });
+                }
+                if (group.level !== classe) {
+                    return res.status(400).json({
+                        message: "that group does not belong to the selected class.",
+                    });
+                }
+
+                const today = new Date();
+                schoolYear = await SchoolYear.findOne({
+                    where: {
+                        start_date: { [Op.lte]: today },
+                        end_date: { [Op.gte]: today },
+                    },
+                });
+                if (!schoolYear) {
+                    schoolYear = await SchoolYear.findOne({ order: [["start_date", "DESC"]] });
+                }
+                if (!schoolYear) {
+                    return res.status(400).json({
+                        message: "no school year defined.",
+                    });
+                }
+            }
+
+            // ---- pricing label: 6th year group "أ" uses the "نموذجي" prices ----
+            const priceLabel =
+                classe === SIXTH_YEAR && Number(group_id) === SIXTH_YEAR_MODEL_GROUP_ID
+                    ? SIXTH_YEAR_MODEL
+                    : classe;
+
+            // ---- payment type flags ----
+            const isYearly = payment_type === "يدفع سنويًا";
+
+            // ---- optional custom amount = amount paid now ----
+            // Partial payment is allowed ONLY for yearly payment.
+            // For monthly / trimester the custom amount is ignored.
+            const hasCustomAmount = amount !== undefined && amount !== null && amount !== "";
+            const useCustomAmount = hasCustomAmount && isYearly;
+            const customAmount = useCustomAmount ? parseFloat(amount) : null;
+
+            if (useCustomAmount && !(customAmount > 0)) {
+                return res.status(400).json({
+                    message: "Paid amount must be greater than 0.",
+                });
+            }
+
+            // DECIMAL comes back as a string -> parse
+            //   all  -> full set price        (books)
+            //   one  -> price of one book     (books_unit_price)
+            //   same -> same book x its count (books_unit_price * books_count)
+            const allBooksFee = parseFloat(daycareBooksFee.books) || 0;
+            const unitBookFee = parseFloat(daycareBooksFee.books_unit_price) || 0;
+
+            let bookFee = 0;
+            if (takesBook && !daycareBooksFee.books_disabled) {
+                if (savedBookType === "same") bookFee = unitBookFee * savedBooksCount;
+                else if (savedBookType === "one") bookFee = unitBookFee;
+                else bookFee = allBooksFee;
+            }
+
+            const uniformFee = takesUniform
                 ? parseFloat(daycareBooksFee.uniform)
                 : 0;
 
@@ -145,9 +270,9 @@ exports.createStudent = [
                 payment_type === "يدفع بالثلاثي" ||
                 payment_type === "يدفع سنويًا"
             ) {
-                const priceType = payment_type === "يدفع سنويًا" ? "yearly" : "monthly";
+                const priceType = isYearly ? "yearly" : "monthly";
 
-                const price = await Price.findOne({ where: { label: classe, type: priceType } });
+                const price = await Price.findOne({ where: { label: priceLabel, type: priceType } });
                 if (!price) {
                     return res.status(400).json({
                         message: "that class not exist.",
@@ -155,7 +280,7 @@ exports.createStudent = [
                 }
 
                 let zoneAmount = 0;
-                if (toBool(transport) && zone_id) {
+                if (hasTransport && zone_id) {
                     const zone = await Zone.findOne({ where: { id: zone_id } });
                     if (!zone) {
                         return res.status(400).json({
@@ -167,10 +292,9 @@ exports.createStudent = [
 
                 const baseAmount = parseFloat(price.amount) + zoneAmount;
 
-                if (priceType === "yearly") {
+                if (isYearly) {
                     // addition already includes registerFee
                     totalPrice = baseAmount + addition;
-                    normalPrice = totalPrice;
                 } else {
                     const monthlyAmount = baseAmount / 2;
                     normalPrice = baseAmount;
@@ -184,6 +308,18 @@ exports.createStudent = [
                     totalPrice = totalPrice / 2;
                 } else if (promotion === "free") {
                     totalPrice = 0;
+                }
+
+                // yearly: the full price (after promotion) is what they should pay
+                if (isYearly) {
+                    normalPrice = totalPrice;
+
+                    // partial payment can't be more than what they should pay
+                    if (useCustomAmount && customAmount > totalPrice) {
+                        return res.status(400).json({
+                            message: "Paid amount cannot exceed the total amount.",
+                        });
+                    }
                 }
 
             } else if (payment_type !== "غير معني بالدفع") {
@@ -201,10 +337,18 @@ exports.createStudent = [
                 mother_phone,
                 gender,
                 birthday,
-                unique_id,
+                unique_id: unique_id || null, // "" would count as a duplicate of other empty ids
                 class: classe,
                 address,
             });
+
+            if (group && schoolYear) {
+                await StudentGroup.create({
+                    student_id: student.id,
+                    group_id: group.id,
+                    school_year_id: schoolYear.id,
+                });
+            }
 
             const date = new Date();
             const year = date.getFullYear();
@@ -213,19 +357,27 @@ exports.createStudent = [
 
             const firstPeriodPass = !(month === 9 && day >= 1 && day <= 20);
 
+            // fields shared by every subscription row created below
+            const subscriptionBase = {
+                student_id: student.id,
+                transport: hasTransport,
+                zone_id: hasTransport && zone_id ? zone_id : null,
+                is_take_book: takesBook,
+                book_type: savedBookType,
+                books_count: savedBooksCount,
+                is_take_uniform: takesUniform,
+                payment_type,
+                promotion: promotion || null,
+                siblings_count: siblings_count || null,
+            };
+
             if (payment_type !== "غير معني بالدفع") {
                 if (payment_type == "يدفع شهريًا" && firstPeriodPass) {
                     const firstSubscription = await Subscription.create({
+                        ...subscriptionBase,
                         amount: totalPrice,
-                        student_id: student.id,
-                        transport,
-                        is_take_book,
-                        is_take_uniform,
-                        zone_id: zone_id || null,
-                        payment_type,
+                        paid_amount: totalPrice,
                         period: `${year}-08`,
-                        promotion: promotion || null,
-                        siblings_count: siblings_count || null,
                     });
                     await StudentPayment.create({
                         amount: totalPrice,
@@ -242,22 +394,33 @@ exports.createStudent = [
                 }
                 const period = `${periodYear}-${String(periodMonth + 1).padStart(2, "0")}`;
 
+                // amount = what they should pay, paid = what they paid now
+                let subAmount;
+                let subPaid;
+                let subStatus;
+
+                if (isYearly) {
+                    subAmount = totalPrice;
+                    subPaid = useCustomAmount ? customAmount : totalPrice;
+                    subStatus = subPaid < subAmount ? "partially_paid" : "payé";
+                } else {
+                    subAmount = firstPeriodPass ? normalPrice : totalPrice;
+                    const isPending = payment_type == "يدفع شهريًا" && firstPeriodPass;
+                    subStatus = isPending ? "en attente" : "payé";
+                    subPaid = isPending ? 0 : subAmount;
+                }
+
                 const subscription = await Subscription.create({
-                    amount: firstPeriodPass ? normalPrice : totalPrice,
-                    student_id: student.id,
-                    transport,
-                    is_take_book,
-                    is_take_uniform,
-                    zone_id: zone_id || null,
-                    payment_type,
+                    ...subscriptionBase,
+                    amount: subAmount,
+                    paid_amount: subPaid,
                     period: payment_type == "يدفع شهريًا" ? period : payment_type == "يدفع بالثلاثي" ? "2026-T1" : "2026-2027",
-                    promotion: promotion || null,
-                    siblings_count: siblings_count || null,
-                    status: (payment_type == "يدفع شهريًا" && firstPeriodPass) ? "en attente" : "payé"
+                    status: subStatus,
                 });
 
+                // yearly: record only what was actually paid
                 await StudentPayment.create({
-                    amount: firstPeriodPass ? normalPrice : totalPrice,
+                    amount: isYearly ? subPaid : subAmount,
                     date: new Date(),
                     subscription_id: subscription.id,
                 });
@@ -298,6 +461,10 @@ exports.getAllStudents = async (req, res) => {
             },
             order: [["createdAt", "DESC"]],
             include: [
+                {
+                    model:Group,
+                    attributes:["name"]
+                },
                 {
                     model: Subscription,
                     as: "subscriptions",
@@ -510,7 +677,6 @@ exports.updateStudent = [
                 }
             }
 
-            const toBool = (v) => v === true || v === "true";
             const bookBool = toBool(is_take_book);
             const uniformBool = toBool(is_take_uniform);
             const transportBool = !!zone_id;
@@ -695,7 +861,6 @@ exports.reenrollStudent  = [
     },
 ];
 
-const toBool = (v) => v === true || v === "true";
 
 async function calculatePrice({
   classe,
@@ -705,29 +870,47 @@ async function calculatePrice({
   is_take_uniform,
   zone_id,
   promotion,
+  book_type,
+  books_count,
+  group_id,
 }) {
   const daycareBooksFee = await DaycareBooksFee.findOne({ where: { label: classe } });
   if (!daycareBooksFee) {
     throw { status: 400, message: "that class not exist." };
   }
 
+  const hasTransport = toBool(transport);
+  const takesBook = toBool(is_take_book);
+  const takesUniform = toBool(is_take_uniform);
+  const isYearly = payment_type === "يدفع سنويًا";
 
-    const bookFee = (toBool(is_take_book) && !daycareBooksFee.books_disabled)
-                ? parseFloat(daycareBooksFee.books)
-                : 0;
+  // ---- pricing label: 6th year group "أ" uses the "نموذجي" prices ----
+  const priceLabel =
+    classe === SIXTH_YEAR && Number(group_id) === SIXTH_YEAR_MODEL_GROUP_ID
+      ? SIXTH_YEAR_MODEL
+      : classe;
 
-    const uniformFee = toBool(is_take_uniform)
-                ? parseFloat(daycareBooksFee.uniform)
-                : 0;
+  // ---- books: all / one / same (unit price x count) ----
+  const savedBookType = takesBook ? (book_type || null) : null;
+  const isSameBooks = takesBook && savedBookType === "same";
+  const savedBooksCount = isSameBooks ? parseInt(books_count, 10) || 0 : 0;
 
-                const { register_fee } = (await SchoolInfo.findOne()) || {}
+  const allBooksFee = parseFloat(daycareBooksFee.books) || 0;
+  const unitBookFee = parseFloat(daycareBooksFee.books_unit_price) || 0;
 
-                const registerFee = register_fee || 70
+  let bookFee = 0;
+  if (takesBook && !daycareBooksFee.books_disabled) {
+    if (savedBookType === "same") bookFee = unitBookFee * savedBooksCount;
+    else if (savedBookType === "one") bookFee = unitBookFee;
+    else bookFee = allBooksFee;
+  }
 
-  const addition =
-    bookFee +
-    uniformFee +
-    parseFloat(registerFee);
+  const uniformFee = takesUniform ? parseFloat(daycareBooksFee.uniform) || 0 : 0;
+
+  const { register_fee } = (await SchoolInfo.findOne()) || {};
+  const registerFee = parseFloat(register_fee) || 70;
+
+  const addition = bookFee + uniformFee + registerFee;
 
   if (payment_type === "غير معني بالدفع") {
     return {
@@ -741,20 +924,21 @@ async function calculatePrice({
     throw { status: 400, message: "Invalid payment type." };
   }
 
-  const priceType = payment_type === "يدفع سنويًا" ? "yearly" : "monthly";
+  const priceType = isYearly ? "yearly" : "monthly";
 
-  const price = await Price.findOne({ where: { label: classe, type: priceType } });
+  const price = await Price.findOne({ where: { label: priceLabel, type: priceType } });
   if (!price) {
     throw { status: 400, message: "that class not exist." };
   }
 
+  // zone only counts when transport is on
   let zoneAmount = 0;
-  if (zone_id) {
+  if (hasTransport && zone_id) {
     const zone = await Zone.findOne({ where: { id: zone_id } });
     if (!zone) {
       throw { status: 400, message: "that zone not exist." };
     }
-    zoneAmount = parseFloat(priceType === "monthly" ? zone.amount : zone.amount_yearly);
+    zoneAmount = parseFloat(priceType === "monthly" ? zone.amount : zone.amount_yearly) || 0;
   }
 
   const baseAmount = parseFloat(price.amount) + zoneAmount;
@@ -762,31 +946,33 @@ async function calculatePrice({
   let creationMonthPrice;
   let normalMonthPrice;
 
-  if (priceType === "yearly") {
-    // Yearly: no halving, same value both ways.
+  if (isYearly) {
+    // addition already includes registerFee
     creationMonthPrice = baseAmount + addition;
     normalMonthPrice = creationMonthPrice;
-  } else {
-    const monthlyAmount = baseAmount; // stored price row IS the monthly value — no halving here
 
-    if (payment_type === "يدفع بالثلاثي") {
-      // Quarterly: full quarter + one-time addition on creation
-      const fullQuarterly = (monthlyAmount / 2) + monthlyAmount * 2;
-      creationMonthPrice = fullQuarterly + addition;
-      normalMonthPrice = monthlyAmount * 3;
-    } else {
-      // Monthly ONLY: creation month is halved
-      creationMonthPrice = (monthlyAmount / 2) + addition;
-      normalMonthPrice = monthlyAmount;
+    // yearly: promotion applies to the full price
+    if (promotion === "discount_50") {
+      creationMonthPrice = creationMonthPrice / 2;
+    } else if (promotion === "free") {
+      creationMonthPrice = 0;
     }
-  }
+    normalMonthPrice = creationMonthPrice;
+  } else {
+    const monthlyAmount = baseAmount / 2; // same as createStudent
+    normalMonthPrice = baseAmount;
 
-  if (promotion === "discount_50") {
-    creationMonthPrice = creationMonthPrice / 2;
-    normalMonthPrice = normalMonthPrice / 2;
-  } else if (promotion === "free") {
-    creationMonthPrice = 0;
-    normalMonthPrice = 0;
+    creationMonthPrice =
+      payment_type === "يدفع بالثلاثي"
+        ? monthlyAmount + baseAmount * 2 + addition
+        : monthlyAmount + addition;
+
+    // monthly / trimester: promotion only touches the creation price (as in createStudent)
+    if (promotion === "discount_50") {
+      creationMonthPrice = creationMonthPrice / 2;
+    } else if (promotion === "free") {
+      creationMonthPrice = 0;
+    }
   }
 
   return {
@@ -803,6 +989,18 @@ exports.previewPrice = [
     .optional({ checkFalsy: true })
     .isIn(["discount_50", "free"])
     .withMessage("Invalid promotion type."),
+  query("book_type")
+    .optional({ checkFalsy: true })
+    .isIn(["one", "all", "same"])
+    .withMessage("Invalid book type."),
+  query("books_count")
+    .if((value, { req }) => toBool(req.query.is_take_book) && req.query.book_type === "same")
+    .isInt({ min: 2, max: 20 })
+    .withMessage("Books count must be between 2 and 20."),
+  query("group_id")
+    .optional({ checkFalsy: true })
+    .isInt({ min: 1 })
+    .withMessage("Invalid group."),
 
   async (req, res) => {
     const errors = validationResult(req);
@@ -810,9 +1008,18 @@ exports.previewPrice = [
       return res.status(400).json({ message: "Validation failed", errors: errors.array() });
     }
 
-    const { classe, payment_type, transport, is_take_book, is_take_uniform, zone_id, promotion } = req.query;
-
-    
+    const {
+      classe,
+      payment_type,
+      transport,
+      is_take_book,
+      is_take_uniform,
+      zone_id,
+      promotion,
+      book_type,
+      books_count,
+      group_id,
+    } = req.query;
 
     try {
       const { creationMonthPrice, normalMonthPrice, breakdown } = await calculatePrice({
@@ -823,6 +1030,9 @@ exports.previewPrice = [
         is_take_uniform,
         zone_id,
         promotion,
+        book_type,
+        books_count,
+        group_id,
       });
 
       return res.status(200).json({ creationMonthPrice, normalMonthPrice, breakdown });

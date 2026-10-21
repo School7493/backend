@@ -1,6 +1,9 @@
 const ActivityLog = require("./ActivityLog");
+const Group = require("./Group");
+const SchoolYear = require("./SchoolYear");
 const Scoring = require("./Scoring");
 const Student = require("./Student");
+const StudentGroup = require("./StudentGroup");
 const StudentPayment = require("./StudentPayment");
 const Subject = require("./Subject");
 const Subscription = require("./Subscription");
@@ -72,4 +75,36 @@ ActivityLog.belongsTo(User, {
     as: "user" 
 });
 
-module.exports = {Teacher,Subject,Scoring,Student,Subscription,TeacherPayment,Zone,User,StudentPayment,ActivityLog}
+
+Student.belongsToMany(Group, {
+  through: StudentGroup,
+  foreignKey: 'student_id',
+  otherKey: 'group_id',
+});
+
+Group.belongsToMany(Student, {
+  through: StudentGroup,
+  foreignKey: 'group_id',
+  otherKey: 'student_id',
+});
+
+StudentGroup.belongsTo(Student, {
+  foreignKey: 'student_id',
+});
+
+StudentGroup.belongsTo(Group, {
+  foreignKey: 'group_id',
+});
+
+StudentGroup.belongsTo(SchoolYear, {
+  foreignKey: 'school_year_id',
+});
+
+SchoolYear.hasMany(StudentGroup, {
+  foreignKey: 'school_year_id',
+});
+
+
+module.exports = {Teacher,Subject,Scoring,Student,Subscription,TeacherPayment,
+                    Zone,User,StudentPayment,ActivityLog,StudentGroup,Group
+                }

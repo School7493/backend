@@ -20,6 +20,9 @@ const activityLogRoutes = require("./routers/activityLogRoutes");
 const StaffPaymentRouter = require("./routers/StaffPaymentRouter");
 const SchoolYearRouter = require("./routers/SchoolYearRouter");
 const HolidayRouter = require("./routers/HolidayRouter");
+const GroupRouter = require("./routers/GroupRouter");
+const StudentGroupRoutes = require("./routers/StudentGroupRoutes");
+
 
 const AuthenticateToken = require("./middlewares/AuthenticateToken");
 
@@ -43,6 +46,9 @@ router.use("/activity-logs", activityLogRoutes);
 router.use("/staff-payment", AuthenticateToken ,StaffPaymentRouter);
 router.use("/school-year",AuthenticateToken,SchoolYearRouter)
 router.use("/holiday",AuthenticateToken,HolidayRouter)
+router.use("/group",AuthenticateToken,GroupRouter)
+router.use("/student-group",AuthenticateToken,StudentGroupRoutes)
+
 
 
 module.exports = router

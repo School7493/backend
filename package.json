@@ -8,7 +8,9 @@
     "admin": "node ./seeders/admin.js",
     "price": "node ./seeders/price.js",
     "school": "node ./seeders/schoolInfo.js",
-    "books": "node ./seeders/daycareBooksFee.js"
+    "books": "node ./seeders/daycareBooksFee.js",
+    "group": "node ./seeders/group"
+
   },
   "author": "",
   "license": "ISC",

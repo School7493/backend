@@ -1,6 +1,5 @@
 const { DataTypes } = require("sequelize");
 const sequelize = require("../config/db");
-const Teacher = require("./Teacher");
 const Student = require("./Student");
 const Zone = require("./Zone");
 
@@ -13,6 +12,21 @@ const Subscription  = sequelize.define("subscriptions",{
     amount:{
         type:DataTypes.DOUBLE,
     },
+    // amount already paid
+    paid_amount:{
+        type:DataTypes.DOUBLE,
+        allowNull:false,
+        defaultValue:0
+    },
+    // amount still to pay (computed, not stored)
+    remaining_amount:{
+        type:DataTypes.VIRTUAL(DataTypes.DOUBLE),
+        get(){
+            const total = Number(this.getDataValue("amount") ?? 0);
+            const paid = Number(this.getDataValue("paid_amount") ?? 0);
+            return Math.max(total - paid, 0);
+        }
+    },
     transport:{
         type:DataTypes.BOOLEAN
     },
@@ -23,7 +37,7 @@ const Subscription  = sequelize.define("subscriptions",{
             'غير معني بالدفع'),
     },
     status:{
-        type:DataTypes.ENUM("payé","en attente","non payé"),
+        type:DataTypes.ENUM("payé","en attente","non payé","partially_paid"),
         defaultValue:"payé"
     },
     is_take_book:{
@@ -43,6 +57,16 @@ const Subscription  = sequelize.define("subscriptions",{
     siblings_count:{
         type:DataTypes.INTEGER,
         allowNull:true
+    },
+        book_type: {
+    type: DataTypes.ENUM('one', 'all', 'same'),
+    allowNull: true,
+    defaultValue: "all",
+    },
+    books_count: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    defaultValue: null,
     },
     student_id:{
         type:DataTypes.BIGINT,
