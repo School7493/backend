@@ -40,6 +40,9 @@ const Student  = sequelize.define("students",{
     birthday:{
         type:DataTypes.DATEONLY,
     },
+    birth_place:{
+        type:DataTypes.STRING,
+    },
     is_deleted:{
         type:DataTypes.BOOLEAN,
         defaultValue:false

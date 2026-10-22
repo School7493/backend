@@ -75,9 +75,10 @@ exports.createStudent = [
 
     body("birthday")
         .notEmpty()
-        .withMessage("Date of birth is required.")
+        .withMessage("birthday place required.")
         .isISO8601()
         .withMessage("Invalid date of birth."),
+
 
     body("classe")
         .trim()
@@ -141,6 +142,7 @@ exports.createStudent = [
                 classe,
                 gender,
                 birthday,
+                birth_place,
                 unique_id,
                 transport,
                 is_take_book,
@@ -337,6 +339,7 @@ exports.createStudent = [
                 mother_phone,
                 gender,
                 birthday,
+                birth_place,
                 unique_id: unique_id || null, // "" would count as a duplicate of other empty ids
                 class: classe,
                 address,
