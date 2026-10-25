@@ -89,21 +89,15 @@ Group.belongsToMany(Student, {
   otherKey: 'student_id',
 });
 
-StudentGroup.belongsTo(Student, {
-  foreignKey: 'student_id',
-});
-
-StudentGroup.belongsTo(Group, {
-  foreignKey: 'group_id',
+SchoolYear.hasMany(StudentGroup, {
+  foreignKey: 'school_year_id',
 });
 
 StudentGroup.belongsTo(SchoolYear, {
   foreignKey: 'school_year_id',
 });
 
-SchoolYear.hasMany(StudentGroup, {
-  foreignKey: 'school_year_id',
-});
+
 
 
 Student.hasMany(Transport, { foreignKey: "student_id",as:"transport" });

@@ -36,6 +36,13 @@ const SIXTH_YEAR = "السنة السادسة";
 const SIXTH_YEAR_MODEL = "السنة السادسة نموذجي";
 const SIXTH_YEAR_MODEL_GROUP_ID = 31;
 
+// TEMPORARY: system is already in use with previous students,
+// so new students get these fixed periods instead of computing from today's date.
+const TEMP_PERIODS = ["2026-08", "2026-09", "2026-10"];
+const FIRST_PERIOD = "2026-08";   // paid at registration (monthly only)
+const CURRENT_PERIOD = "2026-10"; // the subscription linked as the "main" one
+const OVERDUE_PERIOD = "2026-09"; // past month, not paid -> "non payé"
+
 exports.createStudent = [
     body("name")
         .trim()
@@ -200,9 +207,25 @@ exports.createStudent = [
             const isSameBooks = takesBook && savedBookType === "same";
             const savedBooksCount = isSameBooks ? parseInt(books_count, 10) : null;
 
+            // ---- school year (always needed: enrollment uses it, even without a group) ----
+            const today = new Date();
+            let schoolYear = await SchoolYear.findOne({
+                where: {
+                    start_date: { [Op.lte]: today },
+                    end_date: { [Op.gte]: today },
+                },
+            });
+            if (!schoolYear) {
+                schoolYear = await SchoolYear.findOne({ order: [["start_date", "DESC"]] });
+            }
+            if (!schoolYear) {
+                return res.status(400).json({
+                    message: "no school year defined.",
+                });
+            }
+
             // ---- optional group (checked BEFORE creating the student) ----
             let group = null;
-            let schoolYear = null;
 
             if (group_id) {
                 group = await Group.findByPk(group_id);
@@ -216,22 +239,6 @@ exports.createStudent = [
                         message: "that group does not belong to the selected class.",
                     });
                 }
-
-                const today = new Date();
-                schoolYear = await SchoolYear.findOne({
-                    where: {
-                        start_date: { [Op.lte]: today },
-                        end_date: { [Op.gte]: today },
-                    },
-                });
-                if (!schoolYear) {
-                    schoolYear = await SchoolYear.findOne({ order: [["start_date", "DESC"]] });
-                }
-                if (!schoolYear) {
-                    return res.status(400).json({
-                        message: "no school year defined.",
-                    });
-                }
             }
 
             // ---- pricing label: 6th year group "أ" uses the "نموذجي" prices ----
@@ -242,6 +249,7 @@ exports.createStudent = [
 
             // ---- payment type flags (tuition only) ----
             const isYearly = payment_type === "يدفع سنويًا";
+            const isMonthly = payment_type === "يدفع شهريًا";
 
             // ---- optional custom amount = amount paid now ----
             // Partial payment is allowed ONLY for yearly payment.
@@ -360,29 +368,13 @@ exports.createStudent = [
                 address,
             });
 
-            if (group && schoolYear) {
+            if (group) {
                 await StudentGroup.create({
                     student_id: student.id,
                     group_id: group.id,
                     school_year_id: schoolYear.id,
                 });
             }
-
-            const date = new Date();
-            const year = date.getFullYear();
-            const month = date.getMonth() + 1; // 1-indexed
-            const day = date.getDate();
-
-            const firstPeriodPass = !(month === 9 && day >= 1 && day <= 20);
-
-            // current billing month: before the 20th it still belongs to the previous month
-            let periodYear = date.getFullYear();
-            let periodMonth = date.getMonth(); // 0-indexed
-            if (date.getDate() < 20) {
-                periodMonth -= 1;
-                if (periodMonth < 0) { periodMonth = 11; periodYear -= 1; }
-            }
-            const period = `${periodYear}-${String(periodMonth + 1).padStart(2, "0")}`;
 
             // fields shared by every subscription row created below
             const subscriptionBase = {
@@ -396,69 +388,91 @@ exports.createStudent = [
                 siblings_count: siblings_count || null,
             };
 
-            let subscription = null;
+            let subscription = null;           // the "main" subscription
+            const subsByPeriod = {};           // monthly only: period -> subscription
 
             if (payment_type !== "غير معني بالدفع") {
-                if (payment_type == "يدفع شهريًا" && firstPeriodPass) {
-                    const firstSubscription = await Subscription.create({
-                        ...subscriptionBase,
-                        amount: totalPrice,
-                        paid_amount: totalPrice,
-                        period: `${year}-08`,
-                    });
-                    await StudentPayment.create({
-                        amount: totalPrice,
-                        date: new Date(),
-                        subscription_id: firstSubscription.id,
-                    });
-                }
-
-                // amount = what they should pay, paid = what they paid now
-                let subAmount;
-                let subPaid;
-                let subStatus;
-
-                if (isYearly) {
-                    subAmount = totalPrice;
-                    subPaid = useCustomAmount ? customAmount : totalPrice;
-                    subStatus = subPaid < subAmount ? "partially_paid" : "payé";
+                if (isMonthly) {
+                    // TEMPORARY: 08 paid at registration, 09 non payé, 10 en attente
+                    for (const p of TEMP_PERIODS) {
+                        if (p === FIRST_PERIOD) {
+                            const firstSubscription = await Subscription.create({
+                                ...subscriptionBase,
+                                amount: totalPrice,
+                                paid_amount: totalPrice,
+                                period: p,
+                            });
+                            await StudentPayment.create({
+                                amount: totalPrice,
+                                date: new Date(),
+                                subscription_id: firstSubscription.id,
+                            });
+                            subsByPeriod[p] = firstSubscription;
+                        } else {
+                            subsByPeriod[p] = await Subscription.create({
+                                ...subscriptionBase,
+                                amount: normalPrice,
+                                paid_amount: 0,
+                                period: p,
+                                status: p === OVERDUE_PERIOD ? "non payé" : "en attente",
+                            });
+                        }
+                    }
+                    subscription = subsByPeriod[CURRENT_PERIOD];
                 } else {
-                    subAmount = firstPeriodPass ? normalPrice : totalPrice;
-                    const isPending = payment_type == "يدفع شهريًا" && firstPeriodPass;
-                    subStatus = isPending ? "en attente" : "payé";
-                    subPaid = isPending ? 0 : subAmount;
+                    // trimester / yearly: unchanged
+                    // amount = what they should pay, paid = what they paid now
+                    let subAmount;
+                    let subPaid;
+                    let subStatus;
+
+                    if (isYearly) {
+                        subAmount = totalPrice;
+                        subPaid = useCustomAmount ? customAmount : totalPrice;
+                        subStatus = subPaid < subAmount ? "partially_paid" : "payé";
+                    } else {
+                        subAmount = totalPrice;
+                        subPaid = subAmount;
+                        subStatus = "payé";
+                    }
+
+                    subscription = await Subscription.create({
+                        ...subscriptionBase,
+                        amount: subAmount,
+                        paid_amount: subPaid,
+                        period: payment_type == "يدفع بالثلاثي" ? "2026-T1" : "2026-2027",
+                        status: subStatus,
+                    });
+
+                    // yearly: record only what was actually paid
+                    await StudentPayment.create({
+                        amount: isYearly ? subPaid : subAmount,
+                        date: new Date(),
+                        subscription_id: subscription.id,
+                    });
                 }
-
-                subscription = await Subscription.create({
-                    ...subscriptionBase,
-                    amount: subAmount,
-                    paid_amount: subPaid,
-                    period: payment_type == "يدفع شهريًا" ? period : payment_type == "يدفع بالثلاثي" ? "2026-T1" : "2026-2027",
-                    status: subStatus,
-                });
-
-                // yearly: record only what was actually paid
-                await StudentPayment.create({
-                    amount: isYearly ? subPaid : subAmount,
-                    date: new Date(),
-                    subscription_id: subscription.id,
-                });
             }
 
-            // transport row for the current month, whatever the tuition payment type
+            // TEMPORARY: transport rows for 08, 09 and 10, whatever the tuition payment type
             if (zone) {
-                await Transport.create({
-                    student_id: student.id,
-                    subscription_id: subscription ? subscription.id : null,
-                    zone_id: zone.id,
-                    amount: transportAmount,
-                    paid_amount: 0,
-                    status: transportAmount === 0 ? "payé" : "en attente",
-                    period,
-                });
+                for (const p of TEMP_PERIODS) {
+                    const linkedSub = isMonthly ? subsByPeriod[p] : subscription;
+                    await Transport.create({
+                        student_id: student.id,
+                        subscription_id: linkedSub ? linkedSub.id : null,
+                        zone_id: zone.id,
+                        amount: transportAmount,
+                        paid_amount: 0,
+                        status: p === OVERDUE_PERIOD ? "non payé" : transportAmount === 0 ? "payé" : "en attente",
+                        period: p,
+                    });
+                }
             }
-             await Enrollment.create(
-        { student_id: student.id, school_year_id: schoolYear.id })
+
+            await Enrollment.create({
+                student_id: student.id,
+                school_year_id: schoolYear.id,
+            });
 
             await ActivityLog.create({
                 action: "create",
@@ -485,7 +499,6 @@ exports.createStudent = [
         }
     }
 ];
-
 
 exports.getAllStudents = async (req, res) => {
     try {
@@ -987,7 +1000,7 @@ async function calculatePrice({
     throw { status: 400, message: "that class not exist." };
   }
 
-  // tuition only, transport is NOT inside it anymore
+  // tuition only, transport is NOT inside it
   const base = parseFloat(price.amount) || 0;
 
   let creationMonthPrice;
@@ -999,10 +1012,11 @@ async function calculatePrice({
     creationMonthPrice = applyPromotion(yearlyTuition + zoneAmount);
     normalMonthPrice = applyPromotion(yearlyTuition);
   } else {
-    // monthly: base + transport + addition (no more halving)
-    // trimester: same structure as before, on tuition only
+    // first month = half tuition for everyone
+    // monthly: 85 / 2 = 42.5, + 70 = 112.5
+    // trimester: keeps its existing formula (base / 2 + base * 2)
     const tuitionDue =
-      payment_type === "يدفع بالثلاثي" ? base / 2 + base * 2 : base;
+      payment_type === "يدفع بالثلاثي" ? base / 2 + base * 2 : base / 2;
 
     creationMonthPrice = applyPromotion(tuitionDue + zoneAmount + addition);
     normalMonthPrice = base;

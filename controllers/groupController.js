@@ -3,6 +3,7 @@ const { UniqueConstraintError } = require('sequelize');
 
 const Group = require('../models/Group');
 const StudentGroup = require('../models/StudentGroup');
+const { Student } = require('../models');
 
 const getAll = async (req, res, next) => {
   try {
@@ -12,11 +13,20 @@ const getAll = async (req, res, next) => {
       where.level = req.query.level;
     }
 
-    const groups = await Group.findAll({
-      where,
-      order: [['level', 'ASC'], ['name', 'ASC']],
-    });
-
+const groups = await Group.findAll({
+  where,
+  order: [
+    ['level', 'ASC'],
+    ['name', 'ASC'],
+  ],
+  include: [
+    {
+      model: Student,
+      attributes:["id"],
+      through: { attributes: [] },
+    },
+  ],
+});
     res.json(groups);
   } catch (error) {
     next(error);

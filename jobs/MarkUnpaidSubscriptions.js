@@ -2,6 +2,7 @@
 const cron = require("node-cron");
 const { Op } = require("sequelize");
 const Subscription = require("../models/Subscription");
+const Transport = require("../models/Transport"); // <- adjust to your real model name/path
 const JobLog = require("../models/JobLog");
 const { getActiveSchoolYear } = require("../utils/schoolYear");
 
@@ -46,25 +47,41 @@ async function runMarkUnpaidSubscriptionsJob() {
         return;
     }
 
-    const [updatedCount] = await Subscription.update(
-        { status: "non payé" },
-        {
-            where: {
-                status: "en attente",
-                period,
-                // don't touch subscriptions that were deactivated outright
-                // (is_active=false, deactivated_by_break=false = real cancellation);
-                // still mark unpaid ones that are active, or only paused for a break
-                [Op.or]: [
-                    { is_active: true },
-                    { deactivated_by_break: true },
-                ],
-            },
-        }
-    );
+    // same filter for both tables
+    const where = {
+        status: "en attente",
+        period,
+        // don't touch records that were deactivated outright
+        // (is_active=false, deactivated_by_break=false = real cancellation);
+        // still mark unpaid ones that are active, or only paused for a break
+        [Op.or]: [
+            { is_active: true },
+            { deactivated_by_break: true },
+        ],
+    };
 
-    await JobLog.create({ job_name: JOB_NAME, period });
-    console.log(`[${JOB_NAME}] marked ${updatedCount} subscriptions as non payé for ${period}`);
+    const t = await Subscription.sequelize.transaction();
+    try {
+        const [subscriptionsCount] = await Subscription.update(
+            { status: "non payé" },
+            { where, transaction: t }
+        );
+
+        const [transportCount] = await Transport.update(
+            { status: "non payé" },
+            { where, transaction: t }
+        );
+
+        await JobLog.create({ job_name: JOB_NAME, period }, { transaction: t });
+        await t.commit();
+
+        console.log(
+            `[${JOB_NAME}] marked ${subscriptionsCount} subscriptions and ${transportCount} transport records as non payé for ${period}`
+        );
+    } catch (err) {
+        await t.rollback();
+        throw err;
+    }
 }
 
 function startMarkUnpaidSubscriptionsJob() {
@@ -73,7 +90,7 @@ function startMarkUnpaidSubscriptionsJob() {
         console.error(`[${JOB_NAME}] boot run failed:`, err);
     });
 
-    // 15th of every month, 02:04. First real run will land on 15/10.
+    // 15th of every month, 00:05.
     cron.schedule("5 0 15 * *", () => {
         runMarkUnpaidSubscriptionsJob().catch(err => {
             console.error(`[${JOB_NAME}] scheduled run failed:`, err);
