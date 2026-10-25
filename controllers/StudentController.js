@@ -9,6 +9,8 @@ const ActivityLog = require("../models/ActivityLog");
 const User = require("../models/Users");
 const SchoolInfo = require("../models/SchoolInfo");
 const SchoolYear = require("../models/SchoolYear");
+const Transport = require("../models/Transport");
+const Enrollment = require("../models/Enrollment");
 const getUser = async (req) => {
         const userId = req.userId;
         const user = await User.findByPk(userId);
@@ -30,10 +32,9 @@ const toBool = (v) => v === true || v === "true";
 // "632 145 20" -> "63214520"
 const stripSpaces = (v) => (typeof v === "string" ? v.replace(/\s+/g, "") : v);
 
-// 6th year, group "أ" (id 22) uses the "نموذجي" pricing
 const SIXTH_YEAR = "السنة السادسة";
 const SIXTH_YEAR_MODEL = "السنة السادسة نموذجي";
-const SIXTH_YEAR_MODEL_GROUP_ID = 22;
+const SIXTH_YEAR_MODEL_GROUP_ID = 31;
 
 exports.createStudent = [
     body("name")
@@ -79,7 +80,6 @@ exports.createStudent = [
         .isISO8601()
         .withMessage("Invalid date of birth."),
 
-
     body("classe")
         .trim()
         .notEmpty()
@@ -112,6 +112,12 @@ exports.createStudent = [
         .isInt({ min: 2, max: 20 })
         .withMessage("Books count must be between 2 and 20.")
         .toInt(),
+
+    // a zone is required when the student takes transport
+    body("zone_id")
+        .if((value, { req }) => toBool(req.body.transport))
+        .isInt({ min: 1 })
+        .withMessage("Zone is required when transport is selected."),
 
     body("group_id")
         .optional({ checkFalsy: true })
@@ -178,6 +184,17 @@ exports.createStudent = [
             const takesBook = toBool(is_take_book);
             const takesUniform = toBool(is_take_uniform);
 
+            // ---- zone (transport only, checked BEFORE creating the student) ----
+            let zone = null;
+            if (hasTransport) {
+                zone = await Zone.findByPk(zone_id);
+                if (!zone) {
+                    return res.status(400).json({
+                        message: "that zone not exist.",
+                    });
+                }
+            }
+
             // ---- books: type + count (count only exists for "same") ----
             const savedBookType = takesBook ? (book_type || null) : null;
             const isSameBooks = takesBook && savedBookType === "same";
@@ -223,7 +240,7 @@ exports.createStudent = [
                     ? SIXTH_YEAR_MODEL
                     : classe;
 
-            // ---- payment type flags ----
+            // ---- payment type flags (tuition only) ----
             const isYearly = payment_type === "يدفع سنويًا";
 
             // ---- optional custom amount = amount paid now ----
@@ -281,18 +298,8 @@ exports.createStudent = [
                     });
                 }
 
-                let zoneAmount = 0;
-                if (hasTransport && zone_id) {
-                    const zone = await Zone.findOne({ where: { id: zone_id } });
-                    if (!zone) {
-                        return res.status(400).json({
-                            message: "that zone not exist.",
-                        });
-                    }
-                    zoneAmount = parseFloat(priceType === "monthly" ? zone.amount : zone.amount_yearly);
-                }
-
-                const baseAmount = parseFloat(price.amount) + zoneAmount;
+                // tuition only: transport is billed separately in `transports`
+                const baseAmount = parseFloat(price.amount);
 
                 if (isYearly) {
                     // addition already includes registerFee
@@ -330,6 +337,14 @@ exports.createStudent = [
                 });
             }
 
+            // ---- transport: always monthly (zone.amount), same promotion applies ----
+            let transportAmount = 0;
+            if (zone) {
+                transportAmount = parseFloat(zone.amount) || 0;
+                if (promotion === "discount_50") transportAmount = transportAmount / 2;
+                else if (promotion === "free") transportAmount = 0;
+            }
+
             const student = await Student.create({
                 name,
                 last_name,
@@ -360,11 +375,18 @@ exports.createStudent = [
 
             const firstPeriodPass = !(month === 9 && day >= 1 && day <= 20);
 
+            // current billing month: before the 20th it still belongs to the previous month
+            let periodYear = date.getFullYear();
+            let periodMonth = date.getMonth(); // 0-indexed
+            if (date.getDate() < 20) {
+                periodMonth -= 1;
+                if (periodMonth < 0) { periodMonth = 11; periodYear -= 1; }
+            }
+            const period = `${periodYear}-${String(periodMonth + 1).padStart(2, "0")}`;
+
             // fields shared by every subscription row created below
             const subscriptionBase = {
                 student_id: student.id,
-                transport: hasTransport,
-                zone_id: hasTransport && zone_id ? zone_id : null,
                 is_take_book: takesBook,
                 book_type: savedBookType,
                 books_count: savedBooksCount,
@@ -373,6 +395,8 @@ exports.createStudent = [
                 promotion: promotion || null,
                 siblings_count: siblings_count || null,
             };
+
+            let subscription = null;
 
             if (payment_type !== "غير معني بالدفع") {
                 if (payment_type == "يدفع شهريًا" && firstPeriodPass) {
@@ -388,14 +412,6 @@ exports.createStudent = [
                         subscription_id: firstSubscription.id,
                     });
                 }
-
-                let periodYear = date.getFullYear();
-                let periodMonth = date.getMonth(); // 0-indexed
-                if (date.getDate() < 20) {
-                    periodMonth -= 1;
-                    if (periodMonth < 0) { periodMonth = 11; periodYear -= 1; }
-                }
-                const period = `${periodYear}-${String(periodMonth + 1).padStart(2, "0")}`;
 
                 // amount = what they should pay, paid = what they paid now
                 let subAmount;
@@ -413,7 +429,7 @@ exports.createStudent = [
                     subPaid = isPending ? 0 : subAmount;
                 }
 
-                const subscription = await Subscription.create({
+                subscription = await Subscription.create({
                     ...subscriptionBase,
                     amount: subAmount,
                     paid_amount: subPaid,
@@ -428,6 +444,21 @@ exports.createStudent = [
                     subscription_id: subscription.id,
                 });
             }
+
+            // transport row for the current month, whatever the tuition payment type
+            if (zone) {
+                await Transport.create({
+                    student_id: student.id,
+                    subscription_id: subscription ? subscription.id : null,
+                    zone_id: zone.id,
+                    amount: transportAmount,
+                    paid_amount: 0,
+                    status: transportAmount === 0 ? "payé" : "en attente",
+                    period,
+                });
+            }
+             await Enrollment.create(
+        { student_id: student.id, school_year_id: schoolYear.id })
 
             await ActivityLog.create({
                 action: "create",
@@ -464,29 +495,29 @@ exports.getAllStudents = async (req, res) => {
             },
             order: [["createdAt", "DESC"]],
             include: [
+                   {
+                    model: Transport,
+                    as: "transport",
+                    attributes: ["id", "amount", "paid_amount", "remaining_amount", "status", "zone_id"],
+                    include: [{ model: Zone, as: "zone", attributes: ["id", "label"] }],
+                },
                 {
                     model:Group,
-                    attributes:["name"]
+                    attributes: ["id", "name"],         
+                    through: { attributes: ["group_id"] },
                 },
                 {
                     model: Subscription,
                     as: "subscriptions",
                     attributes: [
                         "id",
+                        "amount", "paid_amount",         
                         "student_id",
-                        "transport",
                         "is_take_uniform",
                         "is_take_book",
                         "payment_type",
                         "promotion",
                         "siblings_count",
-                    ],
-                    include: [
-                        {
-                            model: Zone,
-                            as: "zone",
-                            attributes: ["id", "label"],
-                        },
                     ],
                 },
             ],
@@ -735,17 +766,19 @@ exports.updateStudent = [
                     zone_id: zone_id || null
                 });
             } else {
-                const [first, ...others] = subscriptions;
+                // The LAST (most recent) subscription gets the updates
+                const last = subscriptions[subscriptions.length - 1];
+                const others = subscriptions.slice(0, -1);
 
-                // First subscription: attributes only, amount unchanged
-                await first.update({
+                // Last subscription: attributes only, amount unchanged
+                await last.update({
                     transport: transportBool,
                     is_take_book: bookBool,
                     is_take_uniform: uniformBool,
                     zone_id: zone_id || null
                 });
 
-                // Other subscriptions: zone/transport only, no additions, amount unchanged
+                // Older subscriptions: zone/transport only, no additions, amount unchanged
                 for (const sub of others) {
                     await sub.update({
                         transport: transportBool,
@@ -779,7 +812,6 @@ exports.updateStudent = [
         }
     }
 ];
-
 exports.reenrollStudent  = [
     body("type")
         .trim()
@@ -886,6 +918,14 @@ async function calculatePrice({
   const takesBook = toBool(is_take_book);
   const takesUniform = toBool(is_take_uniform);
   const isYearly = payment_type === "يدفع سنويًا";
+  const isNoPayment = payment_type === "غير معني بالدفع";
+
+  if (
+    !isNoPayment &&
+    !["يدفع شهريًا", "يدفع بالثلاثي", "يدفع سنويًا"].includes(payment_type)
+  ) {
+    throw { status: 400, message: "Invalid payment type." };
+  }
 
   // ---- pricing label: 6th year group "أ" uses the "نموذجي" prices ----
   const priceLabel =
@@ -915,16 +955,29 @@ async function calculatePrice({
 
   const addition = bookFee + uniformFee + registerFee;
 
-  if (payment_type === "غير معني بالدفع") {
-    return {
-      creationMonthPrice: null,
-      normalMonthPrice: null,
-      breakdown: { addition, base: 0, zoneAmount: 0 },
-    };
+  // ---- transport: always monthly (zone.amount), independent of tuition payment type ----
+  let zoneAmount = 0;
+  if (hasTransport && zone_id) {
+    const zone = await Zone.findOne({ where: { id: zone_id } });
+    if (!zone) {
+      throw { status: 400, message: "that zone not exist." };
+    }
+    zoneAmount = parseFloat(zone.amount) || 0;
   }
 
-  if (!["يدفع شهريًا", "يدفع بالثلاثي", "يدفع سنويًا"].includes(payment_type)) {
-    throw { status: 400, message: "Invalid payment type." };
+  const applyPromotion = (value) => {
+    if (promotion === "discount_50") return value / 2;
+    if (promotion === "free") return 0;
+    return value;
+  };
+
+  // ---- no tuition: only transport can be due ----
+  if (isNoPayment) {
+    return {
+      creationMonthPrice: zoneAmount > 0 ? applyPromotion(zoneAmount) : null,
+      normalMonthPrice: null,
+      breakdown: { addition, base: 0, zoneAmount },
+    };
   }
 
   const priceType = isYearly ? "yearly" : "monthly";
@@ -934,54 +987,31 @@ async function calculatePrice({
     throw { status: 400, message: "that class not exist." };
   }
 
-  // zone only counts when transport is on
-  let zoneAmount = 0;
-  if (hasTransport && zone_id) {
-    const zone = await Zone.findOne({ where: { id: zone_id } });
-    if (!zone) {
-      throw { status: 400, message: "that zone not exist." };
-    }
-    zoneAmount = parseFloat(priceType === "monthly" ? zone.amount : zone.amount_yearly) || 0;
-  }
-
-  const baseAmount = parseFloat(price.amount) + zoneAmount;
+  // tuition only, transport is NOT inside it anymore
+  const base = parseFloat(price.amount) || 0;
 
   let creationMonthPrice;
   let normalMonthPrice;
 
   if (isYearly) {
     // addition already includes registerFee
-    creationMonthPrice = baseAmount + addition;
-    normalMonthPrice = creationMonthPrice;
-
-    // yearly: promotion applies to the full price
-    if (promotion === "discount_50") {
-      creationMonthPrice = creationMonthPrice / 2;
-    } else if (promotion === "free") {
-      creationMonthPrice = 0;
-    }
-    normalMonthPrice = creationMonthPrice;
+    const yearlyTuition = base + addition;
+    creationMonthPrice = applyPromotion(yearlyTuition + zoneAmount);
+    normalMonthPrice = applyPromotion(yearlyTuition);
   } else {
-    const monthlyAmount = baseAmount / 2; // same as createStudent
-    normalMonthPrice = baseAmount;
+    // monthly: base + transport + addition (no more halving)
+    // trimester: same structure as before, on tuition only
+    const tuitionDue =
+      payment_type === "يدفع بالثلاثي" ? base / 2 + base * 2 : base;
 
-    creationMonthPrice =
-      payment_type === "يدفع بالثلاثي"
-        ? monthlyAmount + baseAmount * 2 + addition
-        : monthlyAmount + addition;
-
-    // monthly / trimester: promotion only touches the creation price (as in createStudent)
-    if (promotion === "discount_50") {
-      creationMonthPrice = creationMonthPrice / 2;
-    } else if (promotion === "free") {
-      creationMonthPrice = 0;
-    }
+    creationMonthPrice = applyPromotion(tuitionDue + zoneAmount + addition);
+    normalMonthPrice = base;
   }
 
   return {
     creationMonthPrice,
     normalMonthPrice,
-    breakdown: { addition, base: baseAmount, zoneAmount },
+    breakdown: { addition, base, zoneAmount },
   };
 }
 

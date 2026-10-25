@@ -11,6 +11,11 @@ const StudentPayment  = sequelize.define("student-payments",{
     amount:{
         type:DataTypes.DOUBLE,
     },
+    type: {
+        type: DataTypes.ENUM("subscription", "transport"),
+        allowNull: false,
+        defaultValue: "subscription",
+        },
     date:{
         type:DataTypes.DATE,
     },

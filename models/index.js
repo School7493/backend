@@ -9,6 +9,7 @@ const Subject = require("./Subject");
 const Subscription = require("./Subscription");
 const Teacher = require("./Teacher");
 const TeacherPayment = require("./TeacherPayment");
+const Transport = require("./Transport");
 const User = require("./Users");
 const Zone = require("./Zone");
 
@@ -105,6 +106,15 @@ SchoolYear.hasMany(StudentGroup, {
 });
 
 
+Student.hasMany(Transport, { foreignKey: "student_id",as:"transport" });
+Transport.belongsTo(Student, { foreignKey: "student_id",as:"student" });
+
+Subscription.hasMany(Transport, { foreignKey: "subscription_id",as:"transport" });
+Transport.belongsTo(Subscription, { foreignKey: "subscription_id",as:"subscription" });
+
+Zone.hasMany(Transport, { foreignKey: "zone_id",as:"transport" });
+Transport.belongsTo(Zone, { foreignKey: "zone_id",as:"zone" });
+
 module.exports = {Teacher,Subject,Scoring,Student,Subscription,TeacherPayment,
-                    Zone,User,StudentPayment,ActivityLog,StudentGroup,Group
+                    Zone,User,StudentPayment,ActivityLog,StudentGroup,Group,Transport
                 }

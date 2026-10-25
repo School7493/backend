@@ -2,14 +2,15 @@
 const cron = require("node-cron");
 const { Op } = require("sequelize");
 const Student = require("../models/Student");
-const Zone = require("../models/Zone");
 const Subscription = require("../models/Subscription");
+const Price = require("../models/TuitionFee");
 const JobLog = require("../models/JobLog");
 const SchoolYear = require("../models/SchoolYear");
 const Holiday = require("../models/Holiday");
 const { getActiveSchoolYear } = require("../utils/schoolYear");
 
 const JOB_NAME = "generate_trimester_subscriptions";
+const TRIMESTER_PLAN = "يدفع بالثلاثي";
 
 const toDateOnly = (d) => d.toISOString().slice(0, 10); // 'YYYY-MM-DD'
 
@@ -78,6 +79,24 @@ async function hasRunForPeriod(period) {
     return !!log;
 }
 
+// Tuition only (no zone/transport amount).
+function trimesterTuition(classe, promotion, priceByClass) {
+    const price = priceByClass.get(classe);
+    if (!price) {
+        throw new Error(`no trimester Price row for class "${classe}"`);
+    }
+
+    let amount = parseFloat(price.amount);
+
+    if (promotion === "discount_50") {
+        amount = amount / 2;
+    } else if (promotion === "free") {
+        amount = 0;
+    }
+
+    return amount;
+}
+
 async function runTrimesterSubscriptionJob() {
     const schoolYear = await getActiveSchoolYear();
     if (!schoolYear) {
@@ -97,8 +116,8 @@ async function runTrimesterSubscriptionJob() {
     }
 
     const students = await Student.findAll();
-    const zones = await Zone.findAll();
-    const zoneMap = Object.fromEntries(zones.map(z => [z.id, z]));
+    const trimesterPrices = await Price.findAll({ where: { type: "trimester" } });
+    const priceByClass = new Map(trimesterPrices.map(p => [p.label, p]));
 
     let created = 0;
     let skipped = 0;
@@ -109,13 +128,13 @@ async function runTrimesterSubscriptionJob() {
             order: [["createdAt", "DESC"]]
         });
 
-        if (!lastSubscription || !lastSubscription.zone_id) {
+        if (!lastSubscription) {
             skipped++;
             continue;
         }
 
         // only regenerate for students actually on the quarterly plan
-        if (lastSubscription.payment_type !== "يدفع بالثلاثي") {
+        if (lastSubscription.payment_type !== TRIMESTER_PLAN) {
             continue;
         }
 
@@ -128,19 +147,23 @@ async function runTrimesterSubscriptionJob() {
             continue;
         }
 
-        const zone = zoneMap[lastSubscription.zone_id];
-        if (!zone) {
+        let amount;
+        try {
+            amount = trimesterTuition(student.class, lastSubscription.promotion, priceByClass);
+        } catch (err) {
+            console.error(`[${JOB_NAME}] pricing failed for student ${student.id} (${student.class}):`, err.message);
             skipped++;
             continue;
         }
 
         await Subscription.create({
-            amount: zone.amount * 3, // full trimester, no one-time addition on renewal
-            transport: !!lastSubscription.transport,
-            payment_type: "يدفع بالثلاثي",
+            amount, // full trimester tuition, no one-time addition on renewal
+            payment_type: TRIMESTER_PLAN,
             status: "non payé",
             student_id: student.id,
-            zone_id: zone.id,
+            promotion: lastSubscription.promotion || null,
+            is_take_book: lastSubscription.is_take_book,
+            is_take_uniform: lastSubscription.is_take_uniform,
             period,
         });
 
