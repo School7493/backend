@@ -40,22 +40,32 @@ exports.getAllSubscription = async (req, res) => {
     }
     if (status) where.status = status; // payé | en attente | non payé | partially_paid
 
+    // ---- AND conditions (hide "not concerned with payment" + search)
+    const andConditions = [
+      {
+        [Op.or]: [
+          { payment_type: { [Op.ne]: "غير معني بالدفع" } },
+          { payment_type: null },
+        ],
+      },
+    ];
+
     // ---- search: student name / last_name / unique_id / subscription id
     const terms = (search || "").trim().split(/\s+/).filter(Boolean);
-    if (terms.length) {
-      where[Op.and] = terms.map((t) => {
-        const conditions = [
-          { "$student.name$": { [Op.like]: `%${t}%` } },
-          { "$student.last_name$": { [Op.like]: `%${t}%` } },
-          { "$student.unique_id$": { [Op.like]: `%${t}%` } },
-        ];
-        const idMatch = t.replace(/^#/, "");
-        if (/^\d+$/.test(idMatch)) {
-          conditions.push({ id: parseInt(idMatch, 10) });
-        }
-        return { [Op.or]: conditions };
-      });
-    }
+    terms.forEach((t) => {
+      const conditions = [
+        { "$student.name$": { [Op.like]: `%${t}%` } },
+        { "$student.last_name$": { [Op.like]: `%${t}%` } },
+        { "$student.unique_id$": { [Op.like]: `%${t}%` } },
+      ];
+      const idMatch = t.replace(/^#/, "");
+      if (/^\d+$/.test(idMatch)) {
+        conditions.push({ id: parseInt(idMatch, 10) });
+      }
+      andConditions.push({ [Op.or]: conditions });
+    });
+
+    where[Op.and] = andConditions;
 
     // ---- student filters
     const studentWhere = {};
@@ -81,7 +91,18 @@ exports.getAllSubscription = async (req, res) => {
       where,
       include: [
         studentInclude(["id", "name", "last_name", "class", "unique_id"]),
-        TransportInclude(["id", "amount", "paid_amount", "status"]),
+        {
+          ...TransportInclude([
+            "id",
+            "amount",
+            "paid_amount",
+            "status",
+            "period",
+            "subscription_id", // required for separate: true
+          ]),
+          separate: true, // lets us order the transport rows themselves
+          order: [["period", "ASC"]], // oldest period first; use "DESC" for newest first
+        },
         {
           model: StudentPayment,
           as: "studentPayment",

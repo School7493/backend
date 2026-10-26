@@ -250,6 +250,7 @@ exports.createStudent = [
             // ---- payment type flags (tuition only) ----
             const isYearly = payment_type === "يدفع سنويًا";
             const isMonthly = payment_type === "يدفع شهريًا";
+            const isExempt = payment_type === "غير معني بالدفع";
 
             // ---- optional custom amount = amount paid now ----
             // Partial payment is allowed ONLY for yearly payment.
@@ -339,7 +340,7 @@ exports.createStudent = [
                     }
                 }
 
-            } else if (payment_type !== "غير معني بالدفع") {
+            } else if (!isExempt) {
                 return res.status(400).json({
                     message: "Invalid payment type.",
                 });
@@ -391,66 +392,75 @@ exports.createStudent = [
             let subscription = null;           // the "main" subscription
             const subsByPeriod = {};           // monthly only: period -> subscription
 
-            if (payment_type !== "غير معني بالدفع") {
-                if (isMonthly) {
-                    // TEMPORARY: 08 paid at registration, 09 non payé, 10 en attente
-                    for (const p of TEMP_PERIODS) {
-                        if (p === FIRST_PERIOD) {
-                            const firstSubscription = await Subscription.create({
-                                ...subscriptionBase,
-                                amount: totalPrice,
-                                paid_amount: totalPrice,
-                                period: p,
-                            });
-                            await StudentPayment.create({
-                                amount: totalPrice,
-                                date: new Date(),
-                                subscription_id: firstSubscription.id,
-                            });
-                            subsByPeriod[p] = firstSubscription;
-                        } else {
-                            subsByPeriod[p] = await Subscription.create({
-                                ...subscriptionBase,
-                                amount: normalPrice,
-                                paid_amount: 0,
-                                period: p,
-                                status: p === OVERDUE_PERIOD ? "non payé" : "en attente",
-                            });
-                        }
-                    }
-                    subscription = subsByPeriod[CURRENT_PERIOD];
-                } else {
-                    // trimester / yearly: unchanged
-                    // amount = what they should pay, paid = what they paid now
-                    let subAmount;
-                    let subPaid;
-                    let subStatus;
-
-                    if (isYearly) {
-                        subAmount = totalPrice;
-                        subPaid = useCustomAmount ? customAmount : totalPrice;
-                        subStatus = subPaid < subAmount ? "partially_paid" : "payé";
+            if (isExempt) {
+                // not concerned by payment: still create ONE subscription row
+                // so the student shows up in the data. Nothing to pay, nothing paid,
+                // so no StudentPayment is recorded.
+                subscription = await Subscription.create({
+                    ...subscriptionBase,
+                    amount: 0,
+                    paid_amount: 0,
+                    period: "2026-2027",
+                    status: "payé",
+                });
+            } else if (isMonthly) {
+                // TEMPORARY: 08 paid at registration, 09 non payé, 10 en attente
+                for (const p of TEMP_PERIODS) {
+                    if (p === FIRST_PERIOD) {
+                        const firstSubscription = await Subscription.create({
+                            ...subscriptionBase,
+                            amount: totalPrice,
+                            paid_amount: totalPrice,
+                            period: p,
+                        });
+                        await StudentPayment.create({
+                            amount: totalPrice,
+                            date: new Date(),
+                            subscription_id: firstSubscription.id,
+                        });
+                        subsByPeriod[p] = firstSubscription;
                     } else {
-                        subAmount = totalPrice;
-                        subPaid = subAmount;
-                        subStatus = "payé";
+                        subsByPeriod[p] = await Subscription.create({
+                            ...subscriptionBase,
+                            amount: normalPrice,
+                            paid_amount: 0,
+                            period: p,
+                            status: p === OVERDUE_PERIOD ? "non payé" : "en attente",
+                        });
                     }
-
-                    subscription = await Subscription.create({
-                        ...subscriptionBase,
-                        amount: subAmount,
-                        paid_amount: subPaid,
-                        period: payment_type == "يدفع بالثلاثي" ? "2026-T1" : "2026-2027",
-                        status: subStatus,
-                    });
-
-                    // yearly: record only what was actually paid
-                    await StudentPayment.create({
-                        amount: isYearly ? subPaid : subAmount,
-                        date: new Date(),
-                        subscription_id: subscription.id,
-                    });
                 }
+                subscription = subsByPeriod[CURRENT_PERIOD];
+            } else {
+                // trimester / yearly: unchanged
+                // amount = what they should pay, paid = what they paid now
+                let subAmount;
+                let subPaid;
+                let subStatus;
+
+                if (isYearly) {
+                    subAmount = totalPrice;
+                    subPaid = useCustomAmount ? customAmount : totalPrice;
+                    subStatus = subPaid < subAmount ? "partially_paid" : "payé";
+                } else {
+                    subAmount = totalPrice;
+                    subPaid = subAmount;
+                    subStatus = "payé";
+                }
+
+                subscription = await Subscription.create({
+                    ...subscriptionBase,
+                    amount: subAmount,
+                    paid_amount: subPaid,
+                    period: payment_type == "يدفع بالثلاثي" ? "2026-T1" : "2026-2027",
+                    status: subStatus,
+                });
+
+                // yearly: record only what was actually paid
+                await StudentPayment.create({
+                    amount: isYearly ? subPaid : subAmount,
+                    date: new Date(),
+                    subscription_id: subscription.id,
+                });
             }
 
             // TEMPORARY: transport rows for 08, 09 and 10, whatever the tuition payment type
@@ -508,15 +518,15 @@ exports.getAllStudents = async (req, res) => {
             },
             order: [["createdAt", "DESC"]],
             include: [
-                   {
+                {
                     model: Transport,
                     as: "transport",
                     attributes: ["id", "amount", "paid_amount", "remaining_amount", "status", "zone_id"],
                     include: [{ model: Zone, as: "zone", attributes: ["id", "label"] }],
                 },
                 {
-                    model:Group,
-                    attributes: ["id", "name"],         
+                    model: Group,
+                    attributes: ["id", "name"],
                     through: { attributes: ["group_id"] },
                 },
                 {
@@ -524,7 +534,7 @@ exports.getAllStudents = async (req, res) => {
                     as: "subscriptions",
                     attributes: [
                         "id",
-                        "amount", "paid_amount",         
+                        "amount", "paid_amount",
                         "student_id",
                         "is_take_uniform",
                         "is_take_book",
@@ -548,7 +558,6 @@ exports.getAllStudents = async (req, res) => {
         });
     }
 };
-
 
 exports.deleteStudents = async (req, res) => {
     try {
