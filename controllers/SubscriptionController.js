@@ -100,8 +100,8 @@ exports.getAllSubscription = async (req, res) => {
             "period",
             "subscription_id", // required for separate: true
           ]),
-          separate: true, // lets us order the transport rows themselves
-          order: [["period", "ASC"]], // oldest period first; use "DESC" for newest first
+          separate: true,
+          order: [["period", "ASC"]],
         },
         {
           model: StudentPayment,
@@ -114,6 +114,17 @@ exports.getAllSubscription = async (req, res) => {
       limit,
       offset: (page - 1) * limit,
       distinct: true,
+    });
+
+    // ---- keep only the transport rows that belong to the subscription's period
+    // (only for monthly keys "YYYY-MM"; quarterly/yearly keep all transport rows)
+    const subscriptions = rows.map((row) => {
+      const sub = row.toJSON();
+      const isMonthly = /^\d{4}-\d{2}$/.test(String(sub.period));
+      if (isMonthly && Array.isArray(sub.transport)) {
+        sub.transport = sub.transport.filter((t) => t.period === sub.period);
+      }
+      return sub;
     });
 
     // ---- stats (same filters, whole result set, not just the page)
@@ -153,7 +164,7 @@ exports.getAllSubscription = async (req, res) => {
     return res.json({
       message: "subscriptions retrieved successfully.",
       // each row now includes paid_amount and remaining_amount (virtual)
-      subscriptions: rows,
+      subscriptions,
       pagination: { page, limit, total: count, totalPages: Math.max(Math.ceil(count / limit), 1) },
       stats: {
         totalAmount,                                   // total due
@@ -170,6 +181,7 @@ exports.getAllSubscription = async (req, res) => {
     return res.status(500).json({ message: "Server error." });
   }
 };
+
 const round3 = (n) => Math.round(Number(n) * 1000) / 1000;
 
 class HttpError extends Error {
