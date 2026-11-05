@@ -22,7 +22,7 @@ const groups = await Group.findAll({
   include: [
     {
       model: Student,
-      attributes:["id"],
+      attributes:["id","name","last_name"],
       through: { attributes: [] },
     },
   ],
@@ -141,10 +141,51 @@ const remove = async (req, res, next) => {
   }
 };
 
+const moveStudent = async (req, res) => {
+  try {
+    const { id } = req.params;          // student id
+    const { group_id } = req.body;      // target group id
+
+    const student = await Student.findByPk(id);
+    if (!student) return res.status(404).json({ message: 'Student not found' });
+
+    const target = await Group.findByPk(group_id);
+    if (!target) return res.status(404).json({ message: 'Target group not found' });
+
+    // ⚠️ change `group_id` if your FK has another name
+    if (student.group_id === target.id) {
+      return res.status(400).json({ message: 'Student already in this group' });
+    }
+
+    const current = student.group_id ? await Group.findByPk(student.group_id) : null;
+    if (current && current.level !== target.level) {
+      return res.status(400).json({ message: 'Target group must be in the same level' });
+    }
+
+    if (target.capacity) {
+      const count = await Student.count({
+        where: { group_id: target.id, is_deleted: false },
+      });
+      if (count >= target.capacity) {
+        return res.status(400).json({ message: 'Target group is full' });
+      }
+    }
+
+    student.group_id = target.id;
+    await student.save();
+
+    res.json({ message: 'Student moved', student });
+  } catch (error) {
+    console.error('moveStudent error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
 module.exports = {
   getAll,
   getById,
   create,
   update,
   remove,
+  moveStudent
 };

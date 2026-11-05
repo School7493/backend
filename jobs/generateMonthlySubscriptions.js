@@ -167,7 +167,7 @@ async function runMonthlySubscriptionJob() {
                 subscription = await Subscription.create({
                     amount: tuitionAmount,
                     payment_type: MONTHLY_PLAN,
-                    status: "en attente",
+                    status: "non payé",
                     student_id: student.id,
                     promotion: lastSubscription.promotion || null,
                     is_take_book: lastSubscription.is_take_book,
@@ -180,7 +180,7 @@ async function runMonthlySubscriptionJob() {
             if (transportAmount !== null) {
                 await Transport.create({
                     amount: transportAmount,
-                    status: "en attente",
+                    status: "non payé",
                     period,
                     student_id: student.id,
                     // only linked when a tuition subscription is created this month

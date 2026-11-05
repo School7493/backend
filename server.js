@@ -38,7 +38,6 @@ app.listen(port, async () => {
   startSalaryJob()
     startMonthlySubscriptionJob();
     startTrimesterSubscriptionJob ()
-    startMarkUnpaidSubscriptionsJob()
     startGenerateMonthlyStaffSalariesJob()
     startFinalizeStaffSalariesJob()
     startSummerBreakSubscriptionJob()

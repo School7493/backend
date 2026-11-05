@@ -21,4 +21,6 @@ router.put('/:id', updateGroupValidation, controller.update);
 
 router.delete('/:id', groupIdValidation, controller.remove);
 
+router.put('/student/:id/group', controller.moveStudent);
+
 module.exports = router;
