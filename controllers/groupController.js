@@ -141,7 +141,7 @@ const remove = async (req, res, next) => {
   }
 };
 
-exports.moveStudent = async (req, res) => {
+const moveStudent = async (req, res) => {
   try {
     const { id } = req.params;          // student id
     const { group_id } = req.body;      // target group id
