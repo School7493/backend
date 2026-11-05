@@ -146,11 +146,17 @@ const moveStudent = async (req, res) => {
     const { id } = req.params;          // student id
     const { group_id } = req.body;      // target group id
 
-    // real FK name from Group.hasMany(Student, { as: 'students' })
-    const fk = Group.associations?.students?.foreignKey;
-    if (!fk) {
+    const assoc = Group.associations?.students;
+    if (!assoc) {
       return res.status(500).json({ message: 'Group.students association not found' });
     }
+
+    console.log('moveStudent assoc:', {
+      type: assoc.associationType,       // HasMany or BelongsToMany
+      fk: assoc.foreignKey,
+      through: assoc.through?.model?.name,
+      studentColumns: Object.keys(Student.rawAttributes),
+    });
 
     const student = await Student.findByPk(id);
     if (!student) return res.status(404).json({ message: 'Student not found' });
@@ -158,36 +164,30 @@ const moveStudent = async (req, res) => {
     const target = await Group.findByPk(group_id);
     if (!target) return res.status(404).json({ message: 'Target group not found' });
 
-    const currentGroupId = student.getDataValue(fk);
+    // find the group the student is in now
+    const currentGroups = await Group.findAll({
+      include: [{ model: Student, as: 'students', where: { id: student.id }, attributes: ['id'] }],
+    });
+    const current = currentGroups[0] ?? null;
 
-    if (currentGroupId === target.id) {
+    if (current?.id === target.id) {
       return res.status(400).json({ message: 'Student already in this group' });
     }
-
-    const current = currentGroupId ? await Group.findByPk(currentGroupId) : null;
     if (current && current.level !== target.level) {
       return res.status(400).json({ message: 'Target group must be in the same level' });
     }
 
     if (target.capacity) {
-      const count = await Student.count({
-        where: { [fk]: target.id, is_deleted: false },
-      });
+      const count = await target.countStudents({ where: { is_deleted: false } });
       if (count >= target.capacity) {
         return res.status(400).json({ message: 'Target group is full' });
       }
     }
 
-    const [affected] = await Student.update(
-      { [fk]: target.id },
-      { where: { id: student.id } }
-    );
+    if (current) await current.removeStudent(student);
+    await target.addStudent(student);
 
-    if (!affected) {
-      return res.status(500).json({ message: 'Student was not updated' });
-    }
-
-    res.json({ message: 'Student moved', fk, group_id: target.id });
+    res.json({ message: 'Student moved', type: assoc.associationType });
   } catch (error) {
     console.error('moveStudent error:', error);
     res.status(500).json({ message: 'Server error' });
