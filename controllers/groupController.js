@@ -141,10 +141,16 @@ const remove = async (req, res, next) => {
   }
 };
 
-const moveStudent = async (req, res) => {
+exports.moveStudent = async (req, res) => {
   try {
     const { id } = req.params;          // student id
     const { group_id } = req.body;      // target group id
+
+    // real FK name from Group.hasMany(Student, { as: 'students' })
+    const fk = Group.associations?.students?.foreignKey;
+    if (!fk) {
+      return res.status(500).json({ message: 'Group.students association not found' });
+    }
 
     const student = await Student.findByPk(id);
     if (!student) return res.status(404).json({ message: 'Student not found' });
@@ -152,29 +158,36 @@ const moveStudent = async (req, res) => {
     const target = await Group.findByPk(group_id);
     if (!target) return res.status(404).json({ message: 'Target group not found' });
 
-    // ⚠️ change `group_id` if your FK has another name
-    if (student.group_id === target.id) {
+    const currentGroupId = student.getDataValue(fk);
+
+    if (currentGroupId === target.id) {
       return res.status(400).json({ message: 'Student already in this group' });
     }
 
-    const current = student.group_id ? await Group.findByPk(student.group_id) : null;
+    const current = currentGroupId ? await Group.findByPk(currentGroupId) : null;
     if (current && current.level !== target.level) {
       return res.status(400).json({ message: 'Target group must be in the same level' });
     }
 
     if (target.capacity) {
       const count = await Student.count({
-        where: { group_id: target.id, is_deleted: false },
+        where: { [fk]: target.id, is_deleted: false },
       });
       if (count >= target.capacity) {
         return res.status(400).json({ message: 'Target group is full' });
       }
     }
 
-    student.group_id = target.id;
-    await student.save();
+    const [affected] = await Student.update(
+      { [fk]: target.id },
+      { where: { id: student.id } }
+    );
 
-    res.json({ message: 'Student moved', student });
+    if (!affected) {
+      return res.status(500).json({ message: 'Student was not updated' });
+    }
+
+    res.json({ message: 'Student moved', fk, group_id: target.id });
   } catch (error) {
     console.error('moveStudent error:', error);
     res.status(500).json({ message: 'Server error' });
