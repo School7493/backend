@@ -1,12 +1,13 @@
 const { Student, Subscription, Zone, TeacherPayment } = require("../models");
 const ExcelJS = require("exceljs");
 const puppeteer = require("puppeteer");
-const {getDetailedReportData} = require("../services/reportService");
-const {buildPdfReport} = require("../services/pdfReport");
-const {getYearPeriods} = require("../utils/period");
+const { getDetailedReportData } = require("../services/reportService");
+const { buildPdfReport } = require("../services/pdfReport");
+const { getYearPeriods } = require("../utils/period");
 const StaffPayment = require("../models/StaffPayment");
 const Purchase = require("../models/Purchase");
-const { buildExcelReport } = require("../services/excelReport");   
+const Bill = require("../models/Bill"); // adjust path if needed
+const { buildExcelReport } = require("../services/excelReport");
 
 // Translate stored gender codes to Arabic display text if needed
 function genderLabel(g) {
@@ -184,14 +185,6 @@ function buildStudentsHtml({ students, level }) {
         tr.row-alt td {
             background: #F1F5F9;
         }
-
-        tfoot td {
-            border: none;
-            padding-top: 14px;
-            font-size: 10px;
-            color: #94A3B8;
-            text-align: center;
-        }
     </style>
     </head>
     <body>
@@ -233,9 +226,62 @@ function buildStudentsHtml({ students, level }) {
     `;
 }
 
-function buildDisposition(rawName, ext) {
+async function buildStudentsExcel({ students, level }) {
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = "School Management System";
+
+    const sheet = workbook.addWorksheet("التلاميذ", {
+        views: [{ rightToLeft: true }],
+    });
+
+    sheet.addRow([level ? `لائحة التلاميذ - ${level}` : "لائحة التلاميذ"]).font = { bold: true, size: 14 };
+    sheet.addRow([`عدد التلاميذ: ${students.length}`]);
+    sheet.addRow([]);
+
+    const header = sheet.addRow([
+        "#", "اللقب", "الاسم", "الجنس", "تاريخ الميلاد", "القسم", "الهاتف", "العنوان",
+        "نوع الدفع", "حالة الدفع", "المبلغ", "النقل", "الكتاب", "الزي", "المنطقة",
+    ]);
+    header.font = { bold: true };
+
+    students.forEach((student, index) => {
+        const birthday = student.birthday
+            ? new Date(student.birthday).toLocaleDateString("fr-FR")
+            : "";
+        const phone = student.father_phone || student.mother_phone || "";
+        const sub = getSubscriptionFields(student);
+
+        sheet.addRow([
+            index + 1,
+            student.last_name || "",
+            student.name || "",
+            genderLabel(student.gender),
+            birthday,
+            student.class || "",
+            phone,
+            student.address || "",
+            sub.paymentType,
+            sub.status,
+            sub.amount,
+            sub.transport,
+            sub.book,
+            sub.uniform,
+            sub.zone,
+        ]);
+    });
+
+    sheet.columns.forEach((c) => (c.width = 18));
+
+    return workbook.xlsx.writeBuffer();
+}
+
+function buildStudentsDisposition(rawName, ext) {
     // ASCII-only fallback: strip everything that is not A-Z a-z 0-9 _ -
-    const ascii = rawName.replace(/[^\x20-\x7E]/g, "").replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "students";
+    const ascii =
+        rawName
+            .replace(/[^\x20-\x7E]/g, "")
+            .replace(/[^A-Za-z0-9_-]+/g, "-")
+            .replace(/^-+|-+$/g, "") || "students";
     const encoded = encodeURIComponent(`${rawName}.${ext}`);
     return `attachment; filename="${ascii}.${ext}"; filename*=UTF-8''${encoded}`;
 }
@@ -309,7 +355,7 @@ exports.exportStudents = async (req, res) => {
                 });
 
                 res.setHeader("Content-Type", "application/pdf");
-                res.setHeader("Content-Disposition", buildDisposition(rawFilename, "pdf"));
+                res.setHeader("Content-Disposition", buildStudentsDisposition(rawFilename, "pdf"));
 
                 return res.send(Buffer.from(pdfBuffer));
             } finally {
@@ -320,17 +366,15 @@ exports.exportStudents = async (req, res) => {
         // =========================
         // EXCEL
         // =========================
-        if (format === "excel") {
-            const buffer = await buildStudentsExcel({ students, level });
+        const buffer = await buildStudentsExcel({ students, level });
 
-            res.setHeader(
-                "Content-Type",
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            );
-            res.setHeader("Content-Disposition", buildDisposition(rawFilename, "xlsx"));
+        res.setHeader(
+            "Content-Type",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        );
+        res.setHeader("Content-Disposition", buildStudentsDisposition(rawFilename, "xlsx"));
 
-            return res.send(buffer);
-        }
+        return res.send(buffer);
     } catch (error) {
         console.error("Export students error:", error);
         return res.status(500).json({
@@ -341,117 +385,8 @@ exports.exportStudents = async (req, res) => {
     }
 };
 
-exports.exportStudents = async (req, res) => {
+exports.downloadReport = async (req, res) => {
     try {
-        const { format, level } = req.query;
-
-        if (!["pdf", "excel"].includes(format)) {
-            return res.status(400).json({
-                success: false,
-                message: "Format must be pdf or excel.",
-            });
-        }
-
-        const where = { is_deleted: false };
-        if (level && level.trim() !== "") {
-            where.class = level;
-        }
-
-        const students = await Student.findAll({
-            where,
-            include: [
-                {
-                    model: Subscription,
-                    as: "subscriptions",
-                    include: [
-                        {
-                            model: Zone,
-                            as: "zone",
-                        },
-                    ],
-                },
-            ],
-            order: [
-                ["last_name", "ASC"],
-                ["name", "ASC"],
-            ],
-        });
-
-        const rawFilename = `لائحة-التلاميذ${level ? `-${level}` : ""}`;
-        const asciiFallback = `students${level ? `-${level}` : ""}`;
-
-        // =========================
-        // PDF (Puppeteer)
-        // =========================
-        if (format === "pdf") {
-            const html = buildStudentsHtml({ students, level });
-
-            const browser = await puppeteer.launch({
-                headless: "new",
-                args: [
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu",
-                    "--no-zygote",
-                ],
-                timeout: 60000,
-            });
-
-            try {
-                const page = await browser.newPage();
-                page.setDefaultTimeout(60000);
-                await page.setContent(html, { waitUntil: "load", timeout: 60000 });
-
-                const pdfBuffer = await page.pdf({
-                    format: "A4",
-                    landscape: true,
-                    printBackground: true,
-                    margin: { top: "20px", bottom: "30px", left: "20px", right: "20px" },
-                });
-
-                res.setHeader("Content-Type", "application/pdf");
-                res.setHeader(
-                    "Content-Disposition",
-                    `attachment; filename="${asciiFallback}.pdf"; filename*=UTF-8''${encodeURIComponent(rawFilename)}.pdf`
-                );
-
-                return res.send(Buffer.from(pdfBuffer));
-            } finally {
-                await browser.close();
-            }
-        }
-
-        // =========================
-        // EXCEL
-        // =========================
-        if (format === "excel") {
-            const buffer = await buildStudentsExcel({ students, level });
-
-            res.setHeader(
-                "Content-Type",
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            );
-            res.setHeader(
-                "Content-Disposition",
-                `attachment; filename="${asciiFallback}.xlsx"; filename*=UTF-8''${encodeURIComponent(rawFilename)}.xlsx`
-            );
-
-            return res.send(buffer);
-        }
-    } catch (error) {
-        console.error("Export students error:", error);
-        return res.status(500).json({
-            success: false,
-            message: "Erreur lors de l'exportation des élèves.",
-            error: error.message,
-        });
-    }
-};
-
-
-exports.downloadReport =  async(req, res) => {
-  try {
         const { year, month, type } = req.query;
         const yearNum = parseInt(year, 10);
 
@@ -488,16 +423,17 @@ exports.downloadReport =  async(req, res) => {
         console.error(error);
         return res.status(500).json({ message: "خطأ في إنشاء التقرير", error: error.message });
     }
-}
+};
 
 async function getEarliestDataDate() {
-    const [subMin, staffMin, teacherMin, purchaseMin] = await Promise.all([
+    const [subMin, staffMin, teacherMin, purchaseMin, billMin] = await Promise.all([
         Subscription.min("createdAt"),
         StaffPayment.min("createdAt"),
         TeacherPayment.min("createdAt"),
         Purchase.min("createdAt"),
+        Bill.min("bill_date"),
     ]);
-    const dates = [subMin, staffMin, teacherMin, purchaseMin].filter(Boolean);
+    const dates = [subMin, staffMin, teacherMin, purchaseMin, billMin].filter(Boolean);
     if (!dates.length) return null;
     return new Date(Math.min(...dates.map((d) => new Date(d).getTime())));
 }
@@ -524,4 +460,3 @@ exports.getAvailableReportPeriods = async (req, res) => {
         return res.status(500).json({ message: "خطأ في جلب الفترات المتاحة", error: error.message });
     }
 };
-
