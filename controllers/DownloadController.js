@@ -361,12 +361,20 @@ exports.exportStudents = async (req, res) => {
 
             const browser = await puppeteer.launch({
                 headless: "new",
-                args: ["--no-sandbox", "--disable-setuid-sandbox"],
+                args: [
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--no-zygote",
+                ],
+                timeout: 60000,
             });
 
             try {
                 const page = await browser.newPage();
-                await page.setContent(html, { waitUntil: "networkidle0" });
+                page.setDefaultTimeout(60000);
+                await page.setContent(html, { waitUntil: "load", timeout: 60000 });
 
                 const pdfBuffer = await page.pdf({
                     format: "A4",
@@ -381,7 +389,7 @@ exports.exportStudents = async (req, res) => {
                     `attachment; filename="${asciiFallback}.pdf"; filename*=UTF-8''${encodeURIComponent(rawFilename)}.pdf`
                 );
 
-                return res.send(pdfBuffer);
+                return res.send(Buffer.from(pdfBuffer));
             } finally {
                 await browser.close();
             }
