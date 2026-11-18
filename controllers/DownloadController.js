@@ -47,10 +47,25 @@ function esc(value) {
         .replace(/"/g, "&quot;");
 }
 
+// Pick the student's latest subscription (the query includes `subscriptions`, a list)
+function getLatestSubscription(student) {
+    const subs = Array.isArray(student.subscriptions)
+        ? student.subscriptions
+        : student.subscription
+            ? [student.subscription]
+            : [];
+
+    if (subs.length === 0) return null;
+
+    return [...subs].sort(
+        (a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)
+    )[0];
+}
+
 // Pull subscription-related fields out of a student in one place,
 // so both the PDF and Excel builders stay in sync.
 function getSubscriptionFields(student) {
-    const sub = student.subscription || null;
+    const sub = getLatestSubscription(student);
 
     return {
         paymentType: sub?.payment_type || "",
@@ -218,101 +233,113 @@ function buildStudentsHtml({ students, level }) {
     `;
 }
 
-async function buildStudentsExcel({ students, level }) {
-    const workbook = new ExcelJS.Workbook();
-    workbook.creator = "School Management System";
-    workbook.created = new Date();
-
-    const sheet = workbook.addWorksheet("التلاميذ", {
-        views: [{ rightToLeft: true }],
-    });
-
-    sheet.columns = [
-        { header: "#", key: "num", width: 6 },
-        { header: "اللقب", key: "last_name", width: 16 },
-        { header: "الاسم", key: "name", width: 16 },
-        { header: "الجنس", key: "gender", width: 10 },
-        { header: "تاريخ الميلاد", key: "birthday", width: 14 },
-        { header: "القسم", key: "class", width: 14 },
-        { header: "الهاتف", key: "phone", width: 14 },
-        { header: "العنوان", key: "address", width: 24 },
-        { header: "نوع الدفع", key: "payment_type", width: 16 },
-        { header: "حالة الدفع", key: "status", width: 14 },
-        { header: "المبلغ", key: "amount", width: 12 },
-        { header: "النقل", key: "transport", width: 10 },
-        { header: "الكتاب", key: "book", width: 10 },
-        { header: "الزي", key: "uniform", width: 10 },
-        { header: "المنطقة", key: "zone", width: 14 },
-    ];
-
-    // Header styling
-    const headerRow = sheet.getRow(1);
-    headerRow.eachCell((cell) => {
-        cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
-        cell.fill = {
-            type: "pattern",
-            pattern: "solid",
-            fgColor: { argb: "FF1E293B" },
-        };
-        cell.alignment = { horizontal: "center", vertical: "middle" };
-        cell.border = {
-            top: { style: "thin", color: { argb: "FFCBD5E1" } },
-            bottom: { style: "thin", color: { argb: "FFCBD5E1" } },
-            left: { style: "thin", color: { argb: "FFCBD5E1" } },
-            right: { style: "thin", color: { argb: "FFCBD5E1" } },
-        };
-    });
-    headerRow.height = 22;
-
-    students.forEach((student, index) => {
-        const birthday = student.birthday
-            ? new Date(student.birthday).toLocaleDateString("fr-FR")
-            : "";
-        const phone = student.father_phone || student.mother_phone || "";
-        const sub = getSubscriptionFields(student);
-
-        const row = sheet.addRow({
-            num: index + 1,
-            last_name: student.last_name || "",
-            name: student.name || "",
-            gender: genderLabel(student.gender),
-            birthday,
-            class: student.class || "",
-            phone,
-            address: student.address || "",
-            payment_type: sub.paymentType,
-            status: sub.status,
-            amount: sub.amount,
-            transport: sub.transport,
-            book: sub.book,
-            uniform: sub.uniform,
-            zone: sub.zone,
-        });
-
-        row.eachCell((cell) => {
-            cell.alignment = { horizontal: "center", vertical: "middle" };
-            cell.border = {
-                top: { style: "thin", color: { argb: "FFCBD5E1" } },
-                bottom: { style: "thin", color: { argb: "FFCBD5E1" } },
-                left: { style: "thin", color: { argb: "FFCBD5E1" } },
-                right: { style: "thin", color: { argb: "FFCBD5E1" } },
-            };
-            if (index % 2 === 0) {
-                cell.fill = {
-                    type: "pattern",
-                    pattern: "solid",
-                    fgColor: { argb: "FFF1F5F9" },
-                };
-            }
-        });
-    });
-
-    sheet.getColumn("last_name").alignment = { horizontal: "right" };
-    sheet.getColumn("name").alignment = { horizontal: "right" };
-    sheet.getColumn("address").alignment = { horizontal: "right" };
-
-    return workbook.xlsx.writeBuffer();
+function buildDisposition(rawName, ext) {
+    // ASCII-only fallback: strip everything that is not A-Z a-z 0-9 _ -
+    const ascii = rawName.replace(/[^\x20-\x7E]/g, "").replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "students";
+    const encoded = encodeURIComponent(`${rawName}.${ext}`);
+    return `attachment; filename="${ascii}.${ext}"; filename*=UTF-8''${encoded}`;
 }
+
+exports.exportStudents = async (req, res) => {
+    try {
+        const { format, level } = req.query;
+
+        if (!["pdf", "excel"].includes(format)) {
+            return res.status(400).json({
+                success: false,
+                message: "Format must be pdf or excel.",
+            });
+        }
+
+        const where = { is_deleted: false };
+        if (level && level.trim() !== "") {
+            where.class = level;
+        }
+
+        const students = await Student.findAll({
+            where,
+            include: [
+                {
+                    model: Subscription,
+                    as: "subscriptions",
+                    include: [
+                        {
+                            model: Zone,
+                            as: "zone",
+                        },
+                    ],
+                },
+            ],
+            order: [
+                ["last_name", "ASC"],
+                ["name", "ASC"],
+            ],
+        });
+
+        const rawFilename = `لائحة-التلاميذ${level ? `-${level}` : ""}`;
+
+        // =========================
+        // PDF (Puppeteer)
+        // =========================
+        if (format === "pdf") {
+            const html = buildStudentsHtml({ students, level });
+
+            const browser = await puppeteer.launch({
+                headless: "new",
+                args: [
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--no-zygote",
+                ],
+                timeout: 60000,
+            });
+
+            try {
+                const page = await browser.newPage();
+                page.setDefaultTimeout(60000);
+                await page.setContent(html, { waitUntil: "load", timeout: 60000 });
+
+                const pdfBuffer = await page.pdf({
+                    format: "A4",
+                    landscape: true,
+                    printBackground: true,
+                    margin: { top: "20px", bottom: "30px", left: "20px", right: "20px" },
+                });
+
+                res.setHeader("Content-Type", "application/pdf");
+                res.setHeader("Content-Disposition", buildDisposition(rawFilename, "pdf"));
+
+                return res.send(Buffer.from(pdfBuffer));
+            } finally {
+                await browser.close();
+            }
+        }
+
+        // =========================
+        // EXCEL
+        // =========================
+        if (format === "excel") {
+            const buffer = await buildStudentsExcel({ students, level });
+
+            res.setHeader(
+                "Content-Type",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            );
+            res.setHeader("Content-Disposition", buildDisposition(rawFilename, "xlsx"));
+
+            return res.send(buffer);
+        }
+    } catch (error) {
+        console.error("Export students error:", error);
+        return res.status(500).json({
+            success: false,
+            message: "Erreur lors de l'exportation des élèves.",
+            error: error.message,
+        });
+    }
+};
 
 exports.exportStudents = async (req, res) => {
     try {
