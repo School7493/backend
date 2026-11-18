@@ -5,6 +5,7 @@ const Teacher = require("../models/Teacher");
 const Supervisor = require("../models/Supervisor");
 const Employ = require("../models/Employ");
 const Subject = require("../models/Subject");
+const { createActivityLog } = require("../utils/createActivityLog");
 
 exports.createStudentAbsence = [
     body("reason")
@@ -63,6 +64,15 @@ exports.createStudentAbsence = [
                 person_type: "élève",
                 person_id
             });
+
+            await createActivityLog(
+            req,
+            "create",
+            "absence",
+            absence.id,
+            `${student.name} ${student.last_name}`,
+            `تمت إضافة غياب جديد بتاريخ ${date}`
+        );
 
             return res.status(201).json({
                 message: "Student absence added successfully.",
@@ -137,6 +147,15 @@ exports.createTeacherAbsence = [
                 person_id
             });
 
+            await createActivityLog(
+            req,
+            "absence",
+            "absence",
+            absence.id,
+            `${teacher.name} ${teacher.last_name}`,
+            `تم تسجيل غياب الأستاذ ${teacher.name} ${teacher.last_name} بتاريخ ${date}`
+        );
+
             return res.status(201).json({
                 message: "teacher absence added successfully.",
                 absence
@@ -210,6 +229,15 @@ exports.createSupervisorAbsence = [
                 person_id
             });
 
+            await createActivityLog(
+            req,
+            "absence",
+            "absence",
+            absence.id,
+            `${supervisor.name} ${supervisor.last_name}`,
+            `تم تسجيل غياب المراقب ${supervisor.name} ${supervisor.last_name} بتاريخ ${date}`
+        );
+
             return res.status(201).json({
                 message: "Supervisor absence added successfully.",
                 absence
@@ -282,6 +310,15 @@ exports.createEmployAbsence = [
                 person_type: "employé",
                 person_id
             });
+
+            await createActivityLog(
+            req,
+            "absence",
+            "absence",
+            absence.id,
+            `${employ.name} ${employ.last_name}`,
+            `تم تسجيل غياب الموظف ${employ.name} ${employ.last_name} بتاريخ ${date}`
+        );
 
             return res.status(201).json({
                 message: "Employ absence added successfully.",
@@ -489,6 +526,171 @@ exports.getAllAbsenceEmploys = async (req, res) => {
 
         return res.status(500).json({
             message: "Server error.",
+        });
+    }
+};
+
+const dataAbsence = async (id,type) => {
+    let absence
+    if (type === "employé"){
+        absence = await Employ.findByPk(id);
+    }else if(type === "surveillants"){
+        absence = await Supervisor.findByPk(id);
+    }else if(type === "maître"){
+        absence = await Teacher.findByPk(id);
+    }else{
+        absence = await Student.findByPk(id);
+    }
+    return absence
+}
+
+exports.updateAbsence = [
+    body("reason")
+        .trim()
+        .notEmpty()
+        .withMessage("Absence reason is required."),
+
+    body("date")
+        .notEmpty()
+        .withMessage("Absence date is required.")
+        .isISO8601()
+        .withMessage("Invalid absence date."),
+
+    body("justification")
+        .notEmpty()
+        .withMessage("Justification is required.")
+        .isBoolean()
+        .withMessage("Justification must be true or false."),
+
+    body("person_id")
+        .notEmpty()
+        .withMessage("Student ID is required.")
+        .isInt()
+        .withMessage("Invalid student ID."),
+
+    async (req, res) => {
+    try {
+        const errors = validationResult(req);
+
+            if (!errors.isEmpty()) {
+                return res.status(400).json({
+                    message: "Validation failed",
+                    errors: errors.array(),
+                });
+            }
+        const { id } = req.params;
+
+        const absence = await Absence.findByPk(id);
+
+        if (!absence) {
+            return res.status(404).json({
+                success: false,
+                message: "Absence not found"
+            });
+        }
+
+        const {
+            reason,
+            date,
+            justification,
+            person_type,
+            person_id
+        } = req.body;
+
+        await absence.update({
+            reason,
+            date,
+            justification,
+            person_type,
+            person_id
+        });
+
+        const person = await dataAbsence(absence.person_id,absence.person_type)
+
+        const personName = `${person.name} ${person.last_name}`;
+        const roleNames = {
+        "employé": "الموظف",
+        "élève": "التلميذ",
+        "surveillants": "المراقب",
+        "maître": "الأستاذ"
+    };
+
+    const role = roleNames[absence.person_type] || absence.person_type;
+
+        await createActivityLog(
+            req,
+            "absence",
+            "absence",
+            absence.id,
+            `${personName} (${role})`,
+            `تم تعديل الغياب ${role} ${personName} بتاريخ ${absence.date}`
+        );
+
+
+        return res.status(200).json({
+            success: true,
+            message: "Absence updated successfully",
+            data: absence
+        });
+
+    } catch (error) {
+        console.error(error);
+        return res.status(500).json({
+            success: false,
+            message: "Error updating absence",
+            error: error.message
+        });
+    }
+}]
+
+exports.deleteAbsence = async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const absence = await Absence.findByPk(id);
+
+        if (!absence) {
+            return res.status(404).json({
+                success: false,
+                message: "Absence not found"
+            });
+        }
+
+        const person = await dataAbsence(absence.person_id,absence.person_type)
+
+        const personName = `${person.name} ${person.last_name}`;
+        const roleNames = {
+        "employé": "الموظف",
+        "élève": "التلميذ",
+        "surveillants": "المراقب",
+        "maître": "الأستاذ"
+    };
+
+    const role = roleNames[absence.person_type] || absence.person_type;
+
+        await createActivityLog(
+            req,
+            "absence",
+            "absence",
+            absence.id,
+            `${personName} (${role})`,
+            `تم حذف الغياب ${role} ${personName} بتاريخ ${absence.date}`
+        );
+
+
+        await absence.destroy();
+
+        return res.status(200).json({
+            success: true,
+            message: "Absence deleted successfully"
+        });
+
+    } catch (error) {
+        console.error(error);
+        return res.status(500).json({
+            success: false,
+            message: "Error deleting absence",
+            error: error.message
         });
     }
 };

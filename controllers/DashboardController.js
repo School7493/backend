@@ -9,6 +9,7 @@ const Purchase = require('../models/Purchase');
 const Payment = require('../models/StudentPayment');
 const { Student, Teacher } = db;
 const {getYearPeriods} = require("../utils/period");
+const Bill = require('../models/Bill');
 
 
 
@@ -168,13 +169,24 @@ exports.getDashboardSummary = async (req, res) => {
 }
 
 
+// Make sure this import exists at the top of the controller:
+// const Bill = require('../models/Bill');   // adjust path to your model
+
 function getPeriodRange(month, year) {
     const end = new Date(year, month - 1, 20, 0, 0, 0, 0);       // 20th of given month
     const start = new Date(year, month - 2, 20, 0, 0, 0, 0);      // 20th of previous month
     return { start, end };
 }
 
-exports.getFinancialSummary = async(req, res) => {
+// Local YYYY-MM-DD (avoids the UTC shift of toISOString, and works for DATEONLY columns)
+function toDateOnly(d) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+}
+
+exports.getFinancialSummary = async (req, res) => {
     try {
         const month = parseInt(req.query.month, 10);
         const year = parseInt(req.query.year, 10);
@@ -196,7 +208,7 @@ exports.getFinancialSummary = async(req, res) => {
             raw: true
         });
 
-        // المصاريف: رواتب الموظفين + رواتب الأساتذة + المشتريات
+        // المصاريف: رواتب الموظفين + رواتب الأساتذة + المشتريات + الفواتير
         const staffExpenseResult = await StaffPayment.findOne({
             attributes: [[fn("SUM", col("amount")), "total"]],
             where: { ...dateFilter, status: "payé" },
@@ -215,24 +227,39 @@ exports.getFinancialSummary = async(req, res) => {
             raw: true
         });
 
+        // الفواتير: المبلغ المدفوع فعليا (payé + partially_paid) حسب bill_date
+        const billsExpenseResult = await Bill.findOne({
+            attributes: [[fn("SUM", col("paid_amount")), "total"]],
+            where: {
+                bill_date: {
+                    [Op.gte]: toDateOnly(start),
+                    [Op.lt]: toDateOnly(end)
+                },
+                status: { [Op.in]: ["payé", "partially_paid"] }
+            },
+            raw: true
+        });
+
         const revenue = parseFloat(revenueResult.total) || 0;
         const staffExpense = parseFloat(staffExpenseResult.total) || 0;
         const teacherExpense = parseFloat(teacherExpenseResult.total) || 0;
         const purchaseExpense = parseFloat(purchaseExpenseResult.total) || 0;
+        const billsExpense = parseFloat(billsExpenseResult.total) || 0;
 
-        const totalExpenses = staffExpense + teacherExpense + purchaseExpense;
+        const totalExpenses = staffExpense + teacherExpense + purchaseExpense + billsExpense;
         const netProfit = revenue - totalExpenses;
 
         return res.json({
             period: {
-                from: start.toISOString().split("T")[0],
-                to: end.toISOString().split("T")[0]
+                from: toDateOnly(start),
+                to: toDateOnly(end)
             },
             revenue,
             expenses: {
                 staff: staffExpense,
                 teachers: teacherExpense,
                 purchases: purchaseExpense,
+                bills: billsExpense,
                 total: totalExpenses
             },
             netProfit
@@ -241,7 +268,7 @@ exports.getFinancialSummary = async(req, res) => {
         console.error(error);
         return res.status(500).json({ message: "خطأ في حساب المصاريف والأرباح", error: error.message });
     }
-}
+};
 
 
 function getCurrentPeriod() {

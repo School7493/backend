@@ -10,11 +10,11 @@ const ActivityLog = sequelize.define("activity-log", {
     },
 
     action: {
-        type: DataTypes.ENUM("create", "update", "delete", "pay", "login"),
+        type: DataTypes.ENUM("create", "update", "delete", "pay", "login","scoring","absence"),
         allowNull: false,
     },
     entity_type: {
-        type: DataTypes.ENUM("student", "supervisor", "teacher", "employ","user","purchase","subscription","zone","tuition_fee","school_year","holiday","transport"),
+        type: DataTypes.ENUM("student", "supervisor", "teacher", "employ","user","purchase","subscription","zone","tuition_fee","school_year","holiday","scoring","absence"),
         allowNull: true,
     },
     entity_id: {
@@ -35,12 +35,7 @@ const ActivityLog = sequelize.define("activity-log", {
     },
 
      user_role: {
-        type: DataTypes.ENUM(
-            "مقتصد",
-            "مدير(ة)",
-            "مديرة النظام",
-            "نائب مدير"
-        ),
+        type: DataTypes.ENUM("مدير","كاتب(ة)"),
         allowNull: false,
     },
     user_id: {

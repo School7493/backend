@@ -4,6 +4,8 @@ const { UniqueConstraintError } = require('sequelize');
 const Group = require('../models/Group');
 const StudentGroup = require('../models/StudentGroup');
 const { Student } = require('../models');
+const sequelize = require('../config/db');
+const { createActivityLog } = require('../utils/createActivityLog');
 
 const getAll = async (req, res, next) => {
   try {
@@ -142,53 +144,97 @@ const remove = async (req, res, next) => {
 };
 
 const moveStudent = async (req, res) => {
+  const t = await sequelize.transaction();
   try {
     const { id } = req.params;          // student id
     const { group_id } = req.body;      // target group id
 
-    const assoc = Group.associations?.students;
-    if (!assoc) {
-      return res.status(500).json({ message: 'Group.students association not found' });
+    const student = await Student.findByPk(id, { transaction: t });
+    if (!student) {
+      await t.rollback();
+      return res.status(404).json({ message: 'Student not found' });
     }
 
-    console.log('moveStudent assoc:', {
-      type: assoc.associationType,       // HasMany or BelongsToMany
-      fk: assoc.foreignKey,
-      through: assoc.through?.model?.name,
-      studentColumns: Object.keys(Student.rawAttributes),
-    });
-
-    const student = await Student.findByPk(id);
-    if (!student) return res.status(404).json({ message: 'Student not found' });
-
-    const target = await Group.findByPk(group_id);
-    if (!target) return res.status(404).json({ message: 'Target group not found' });
-
-    // find the group the student is in now
-    const currentGroups = await Group.findAll({
-      include: [{ model: Student, as: 'students', where: { id: student.id }, attributes: ['id'] }],
-    });
-    const current = currentGroups[0] ?? null;
-
-    if (current?.id === target.id) {
-      return res.status(400).json({ message: 'Student already in this group' });
+    const target = await Group.findByPk(group_id, { transaction: t });
+    if (!target) {
+      await t.rollback();
+      return res.status(404).json({ message: 'Target group not found' });
     }
-    if (current && current.level !== target.level) {
-      return res.status(400).json({ message: 'Target group must be in the same level' });
+
+    // current link (latest school year), may not exist
+    const link = await StudentGroup.findOne({
+      where: { student_id: student.id },
+      order: [['school_year_id', 'DESC']],
+      transaction: t,
+    });
+
+    // school year: from the student's link, else from the target group, else the latest overall
+    let schoolYearId = link?.school_year_id;
+    if (!schoolYearId) {
+      const ref =
+        (await StudentGroup.findOne({
+          where: { group_id: target.id },
+          order: [['school_year_id', 'DESC']],
+          transaction: t,
+        })) ||
+        (await StudentGroup.findOne({
+          order: [['school_year_id', 'DESC']],
+          transaction: t,
+        }));
+      schoolYearId = ref?.school_year_id;
+    }
+    if (!schoolYearId) {
+      await t.rollback();
+      return res.status(400).json({ message: 'No school year found' });
+    }
+
+    if (link) {
+      if (link.group_id === target.id) {
+        await t.rollback();
+        return res.status(400).json({ message: 'Student already in this group' });
+      }
+      const current = await Group.findByPk(link.group_id, { transaction: t });
+      if (current && current.level !== target.level) {
+        await t.rollback();
+        return res.status(400).json({ message: 'Target group must be in the same level' });
+      }
     }
 
     if (target.capacity) {
-      const count = await target.countStudents({ where: { is_deleted: false } });
+      const count = await StudentGroup.count({
+        where: { group_id: target.id, school_year_id: schoolYearId },
+        transaction: t,
+      });
       if (count >= target.capacity) {
+        await t.rollback();
         return res.status(400).json({ message: 'Target group is full' });
       }
     }
 
-    if (current) await current.removeStudent(student);
-    await target.addStudent(student);
+    if (link) {
+      await StudentGroup.update(
+        { group_id: target.id },
+        { where: { student_id: student.id, school_year_id: schoolYearId }, transaction: t }
+      );
+    } else {
+      await StudentGroup.create(
+        { student_id: student.id, group_id: target.id, school_year_id: schoolYearId },
+        { transaction: t }
+      );
+    }
 
-    res.json({ message: 'Student moved', type: assoc.associationType });
+    await t.commit();
+    await createActivityLog(
+    req,
+    "update",
+    "student",
+    student.id,
+    `${student.name} ${student.last_name}`,
+    `تم نقل التلميذ ${student.name} ${student.last_name} من مجموعة إلى مجموعة أخرى (${target.name})`
+);
+    res.json({ message: 'Student moved' });
   } catch (error) {
+    await t.rollback();
     console.error('moveStudent error:', error);
     res.status(500).json({ message: 'Server error' });
   }

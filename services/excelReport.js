@@ -1,5 +1,20 @@
 const ExcelJS = require("exceljs");
 
+const BILL_CATEGORY_LABELS = {
+    electricity: "كهرباء",
+    water: "ماء",
+    internet: "إنترنت",
+    telephone: "هاتف",
+    rent: "كراء",
+    other: "أخرى"
+};
+
+const BILL_STATUS_LABELS = {
+    "payé": "مدفوعة",
+    "non payé": "غير مدفوعة",
+    partially_paid: "مدفوعة جزئيا"
+};
+
 async function buildExcelReport(periods) {
     const workbook = new ExcelJS.Workbook();
     workbook.creator = "School Management System";
@@ -21,8 +36,11 @@ async function buildExcelReport(periods) {
         const revHeader = sheet.addRow(["الطالب", "المنطقة", "نوع الدفع", "المبلغ"]);
         revHeader.font = { bold: true };
         period.subscriptions.forEach(s => {
+            const studentName = s.student?.name
+                ? `${s.student.name} ${s.student.last_name || ""}`.trim()
+                : s.student_id;
             sheet.addRow([
-                s.student?.name || s.student_id,
+                studentName,
                 s.zone?.label || s.zone_id,
                 s.payment_type,
                 parseFloat(s.amount) || 0
@@ -56,6 +74,22 @@ async function buildExcelReport(periods) {
             sheet.addRow([p.item, p.quantity, parseFloat(p.unit_price) || 0, parseFloat(p.total_price) || 0]);
         });
         sheet.addRow(["", "", "المجموع", period.totals.purchaseExpense]).font = { bold: true };
+        sheet.addRow([]);
+
+        // الفواتير
+        sheet.addRow(["الفواتير"]).font = { bold: true };
+        sheet.addRow(["العنوان", "الصنف", "تاريخ الفاتورة", "الحالة", "المبلغ", "المدفوع"]).font = { bold: true };
+        (period.bills || []).forEach(b => {
+            sheet.addRow([
+                b.title,
+                BILL_CATEGORY_LABELS[b.category] || b.category,
+                b.bill_date,
+                BILL_STATUS_LABELS[b.status] || b.status,
+                parseFloat(b.amount) || 0,
+                parseFloat(b.paid_amount) || 0
+            ]);
+        });
+        sheet.addRow(["", "", "", "", "المجموع", period.totals.billsExpense || 0]).font = { bold: true };
         sheet.addRow([]);
 
         // ملخص

@@ -6,6 +6,7 @@ const {buildPdfReport} = require("../services/pdfReport");
 const {getYearPeriods} = require("../utils/period");
 const StaffPayment = require("../models/StaffPayment");
 const Purchase = require("../models/Purchase");
+const { buildExcelReport } = require("../services/excelReport");   
 
 // Translate stored gender codes to Arabic display text if needed
 function genderLabel(g) {

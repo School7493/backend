@@ -1,8 +1,26 @@
 const puppeteer = require("puppeteer");
 
+const BILL_CATEGORY_LABELS = {
+    electricity: "كهرباء",
+    water: "ماء",
+    internet: "إنترنت",
+    telephone: "هاتف",
+    rent: "كراء",
+    other: "أخرى"
+};
+
+const BILL_STATUS_LABELS = {
+    "payé": "مدفوعة",
+    "non payé": "غير مدفوعة",
+    partially_paid: "مدفوعة جزئيا"
+};
+
 function renderPeriodHtml(period) {
     const fmt = (d) => d.toLocaleDateString("fr-TN");
     const row = (cells) => `<tr>${cells.map(c => `<td>${c ?? ""}</td>`).join("")}</tr>`;
+
+    const bills = period.bills || [];
+    const billsExpense = period.totals.billsExpense || 0;
 
     return `
     <div class="period">
@@ -41,6 +59,20 @@ function renderPeriodHtml(period) {
         </table>
         <p class="total">${period.totals.purchaseExpense.toFixed(2)}</p>
 
+        <h3>الفواتير</h3>
+        <table>
+            <thead>${row(["العنوان", "الصنف", "تاريخ الفاتورة", "الحالة", "المبلغ", "المدفوع"])}</thead>
+            <tbody>${bills.map(b => row([
+                b.title,
+                BILL_CATEGORY_LABELS[b.category] || b.category,
+                b.bill_date,
+                BILL_STATUS_LABELS[b.status] || b.status,
+                Number(b.amount).toFixed(3),
+                Number(b.paid_amount).toFixed(3)
+            ])).join("")}</tbody>
+        </table>
+        <p class="total">${billsExpense.toFixed(2)}</p>
+
         <h3 class="summary">الملخص</h3>
         <p>إجمالي الإيرادات: ${period.totals.revenue.toFixed(2)}</p>
         <p>إجمالي المصاريف: ${period.totals.totalExpenses.toFixed(2)}</p>
@@ -76,7 +108,13 @@ async function buildPdfReport(periods) {
 
     const browser = await puppeteer.launch({
         headless: "new",
-        args: ["--no-sandbox", "--disable-setuid-sandbox"],
+        args: [
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--no-zygote"
+        ],
         timeout: 30000
     });
     try {

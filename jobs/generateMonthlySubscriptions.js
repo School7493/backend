@@ -9,16 +9,18 @@ const Price = require("../models/TuitionFee");
 const Zone = require("../models/Zone");
 const { getActiveSchoolYear } = require("../utils/schoolYear");
 
-const JOB_NAME = "generate_monthly_subscriptions";
+// must match the name already stored in JobLog (id 30: generate_monthly_payments)
+const JOB_NAME = "generate_monthly_payments";
 const MONTHLY_PLAN = "يدفع شهريًا";
 
 function currentPeriod(date = new Date()) {
-    // billing cycle is 20th -> 20th; label uses the month the cycle STARTS in
+    // billing cycle is 20th -> 20th; label uses the month the cycle ENDS in
+    // e.g. Oct 20 -> Nov 19 is "2026-11", Nov 20 -> Dec 19 is "2026-12"
     let year = date.getFullYear();
     let month = date.getMonth(); // 0-indexed
-    if (date.getDate() < 20) {
-        month -= 1;
-        if (month < 0) { month = 11; year -= 1; }
+    if (date.getDate() >= 20) {
+        month += 1;
+        if (month > 11) { month = 0; year += 1; }
     }
     return `${year}-${String(month + 1).padStart(2, "0")}`;
 }

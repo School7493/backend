@@ -2,11 +2,20 @@ const { body, validationResult, param } = require("express-validator");
 const Teacher = require("../models/Teacher");
 const Scoring = require("../models/Scoring");
 const { Op, fn, col } = require("sequelize");
-const {
-  getPayPeriodBounds,
-  getPayYearBounds,
-  getPayYearOf,
-} = require("../utils/period");
+const { createActivityLog } = require("../utils/createActivityLog");
+
+function getPayYearOf(value) {
+  let y, m, d;
+  if (typeof value === "string") {
+    [y, m, d] = value.slice(0, 10).split("-").map(Number);
+  } else {
+    const dt = new Date(value);
+    y = dt.getFullYear();
+    m = dt.getMonth() + 1;
+    d = dt.getDate();
+  }
+  return m === 12 && d > 20 ? y + 1 : y;
+}
 
 
 
@@ -82,6 +91,17 @@ exports.createScoring = [
                 teacher_id
             });
 
+           await createActivityLog(
+                req,
+                "scoring",
+                "scoring",
+                scoring.id,
+                `${teacher.name} ${teacher.last_name}`,
+                `تمت إضافة سجل ${sense} للأستاذ ${teacher.name} ${teacher.last_name} بتاريخ ${date}`
+            );
+            
+
+
             return res.status(201).json({
                 message: "Scoring added successfully.",
                 scoring
@@ -97,7 +117,6 @@ exports.createScoring = [
     }
 ];
 
-
 exports.getAllScoring = async (req, res) => {
   try {
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
@@ -112,11 +131,16 @@ exports.getAllScoring = async (req, res) => {
     const where = {};
 
     if (year) {
-      const { start, endExclusive } =
-        month && month >= 1 && month <= 12
-          ? getPayPeriodBounds(year, month)
-          : getPayYearBounds(year);
-      where.date = { [Op.gte]: start, [Op.lt]: endExclusive };
+      const pad = (n) => String(n).padStart(2, "0");
+      let start, end;
+      if (month && month >= 1 && month <= 12) {
+        start = `${year}-${pad(month)}-01`;
+        end = month === 12 ? `${year + 1}-01-01` : `${year}-${pad(month + 1)}-01`;
+      } else {
+        start = `${year}-01-01`;
+        end = `${year + 1}-01-01`;
+      }
+      where.date = { [Op.gte]: start, [Op.lt]: end };
     }
 
     if (sense) where.sense = sense;
@@ -148,8 +172,7 @@ exports.getAllScoring = async (req, res) => {
       distinct: true,
     });
 
-    // years that actually exist in the database (pay years)
-    const dateRows = await Scoring.findAll({
+     const dateRows = await Scoring.findAll({
       attributes: [[fn("DISTINCT", col("date")), "date"]],
       raw: true,
     });
@@ -248,6 +271,14 @@ exports.updateScoring = [
                 justification,
                 teacher_id,
             });
+            await createActivityLog(
+            req,
+            "update",
+            "scoring",
+            scoring.id,
+            `${teacher.name} ${teacher.last_name}`,
+            `تم تعديل سجل ${sense} للأستاذ ${teacher.name} ${teacher.last_name} بتاريخ ${date}`
+        );
 
             return res.status(200).json({
                 message: "Scoring updated successfully.",
@@ -259,6 +290,7 @@ exports.updateScoring = [
         }
     },
 ];
+
 
 exports.deleteScoring = [
     param("id").isInt().withMessage("Invalid scoring ID."),
@@ -278,6 +310,16 @@ exports.deleteScoring = [
             if (!scoring) {
                 return res.status(404).json({ message: "Scoring not found." });
             }
+            const teacher = await Teacher.findByPk(scoring.teacher_id);
+
+            await createActivityLog(
+                req,
+                "delete",
+                "scoring",
+                scoring.id,
+                teacher ? `${teacher.name} ${teacher.last_name}` : "أستاذ محذوف",
+                `تم حذف سجل ${scoring.sense} للأستاذ ${teacher ? `${teacher.name} ${teacher.last_name}` : "غير معروف"} بتاريخ ${scoring.date}`
+            );
 
             await scoring.destroy();
 

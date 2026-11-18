@@ -22,6 +22,8 @@ const SchoolYearRouter = require("./routers/SchoolYearRouter");
 const HolidayRouter = require("./routers/HolidayRouter");
 const GroupRouter = require("./routers/GroupRouter");
 const StudentGroupRoutes = require("./routers/StudentGroupRoutes");
+const BillRouter = require("./routers/BillRouter");
+
 
 
 const AuthenticateToken = require("./middlewares/AuthenticateToken");
@@ -31,23 +33,25 @@ router.use("/student",AuthenticateToken,StudentRouter)
 router.use("/teacher",AuthenticateToken,TeacherRouter)
 router.use("/supervisor",AuthenticateToken,SupervisorRouter)
 router.use("/employ",AuthenticateToken,EmployRouter)
-router.use("/absence",AbsenceRouter)
-router.use("/scoring",ScoringRouter)
+router.use("/absence",AuthenticateToken,AbsenceRouter)
+router.use("/scoring",AuthenticateToken,ScoringRouter)
 router.use("/subscription",AuthenticateToken,SubscriptionRouter)
 router.use("/price",AuthenticateToken,PriceRouter)
 router.use("/zone",AuthenticateToken,ZoneRouter)
-router.use("/teacher-payments",TeacherPaymentRoutes)
+router.use("/teacher-payments",AuthenticateToken,TeacherPaymentRoutes)
 router.use("/dashboard",DashboardRouter)
 router.use("/purchase",AuthenticateToken,PurchaseRouter)
-router.use("/school-info",SchoolInfoRouter)
+router.use("/school-info",AuthenticateToken,SchoolInfoRouter)
 router.use("/download",DownloadRouter)
-router.use("/daycare-books-fee",DaycareBooksFee)
-router.use("/activity-logs", activityLogRoutes);
+router.use("/daycare-books-fee",AuthenticateToken,DaycareBooksFee)
+router.use("/activity-logs",AuthenticateToken ,activityLogRoutes);
 router.use("/staff-payment", AuthenticateToken ,StaffPaymentRouter);
 router.use("/school-year",AuthenticateToken,SchoolYearRouter)
 router.use("/holiday",AuthenticateToken,HolidayRouter)
 router.use("/group",AuthenticateToken,GroupRouter)
 router.use("/student-group",AuthenticateToken,StudentGroupRoutes)
+router.use("/bill",AuthenticateToken,BillRouter)
+
 
 
 

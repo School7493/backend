@@ -3,17 +3,26 @@ const Subscription = require("../models/Subscription");
 const StaffPayment = require("../models/StaffPayment");
 const TeacherPayment = require("../models/TeacherPayment");
 const Purchase = require("../models/Purchase");
+const Bill = require("../models/Bill"); // adjust path if needed
 const { Student, Zone, Teacher } = require("../models"); // adjust path to your models/index.js
 const { getPeriodRange, getYearPeriods } = require("../utils/period");
+
+// Local YYYY-MM-DD for DATEONLY columns (avoids the UTC shift of toISOString)
+function toDateOnly(d) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+}
 
 async function getPeriodData(start, end, label) {
     const dateFilter = { createdAt: { [Op.gte]: start, [Op.lt]: end } };
 
-    const [subscriptions, staffPayments, teacherPayments, purchases] = await Promise.all([
+    const [subscriptions, staffPayments, teacherPayments, purchases, bills] = await Promise.all([
         Subscription.findAll({
             where: { ...dateFilter, status: "payé" },
             include: [
-                { model: Student, as: "student", attributes: ["id", "name","last_name"] }, // adjust attrs to your Student model
+                { model: Student, as: "student", attributes: ["id", "name", "last_name"] }, // adjust attrs to your Student model
                 { model: Zone, as: "zone", attributes: ["id", "label"] }
             ],
             raw: true,
@@ -32,6 +41,17 @@ async function getPeriodData(start, end, label) {
         Purchase.findAll({
             where: { ...dateFilter },
             raw: true
+        }),
+        Bill.findAll({
+            where: {
+                bill_date: {
+                    [Op.gte]: toDateOnly(start),
+                    [Op.lt]: toDateOnly(end)
+                },
+                status: { [Op.in]: ["payé", "partially_paid"] }
+            },
+            order: [["bill_date", "ASC"]],
+            raw: true
         })
     ]);
 
@@ -39,7 +59,8 @@ async function getPeriodData(start, end, label) {
     const staffExpense = staffPayments.reduce((s, r) => s + (parseFloat(r.amount) || 0), 0);
     const teacherExpense = teacherPayments.reduce((s, r) => s + (parseFloat(r.amount) || 0), 0);
     const purchaseExpense = purchases.reduce((s, r) => s + (parseFloat(r.total_price) || 0), 0);
-    const totalExpenses = staffExpense + teacherExpense + purchaseExpense;
+    const billsExpense = bills.reduce((s, r) => s + (parseFloat(r.paid_amount) || 0), 0);
+    const totalExpenses = staffExpense + teacherExpense + purchaseExpense + billsExpense;
 
     return {
         label,
@@ -49,11 +70,13 @@ async function getPeriodData(start, end, label) {
         staffPayments,
         teacherPayments,
         purchases,
+        bills,
         totals: {
             revenue,
             staffExpense,
             teacherExpense,
             purchaseExpense,
+            billsExpense,
             totalExpenses,
             netProfit: revenue - totalExpenses
         }
