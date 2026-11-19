@@ -11,8 +11,8 @@ const TuitionFee  = sequelize.define("tuition_fee",{
     label:{
         type:DataTypes.STRING,
     },
-    type:{
-        type:DataTypes.ENUM("monthly","yearly"),
+    type: {
+        type: DataTypes.ENUM("monthly", "trimester", "yearly"),
     },
     amount:{
         type:DataTypes.DOUBLE,

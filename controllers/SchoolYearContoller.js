@@ -1,6 +1,7 @@
 const { body, validationResult } = require("express-validator");
 const SchoolYear = require("../models/SchoolYear");
 const { createActivityLog } = require("../utils/createActivityLog");
+const sequelize = require("../config/db");
 
 exports.getAllSchoolYear = async (req, res) => {
     try {
@@ -62,14 +63,16 @@ exports.createSchoolYear = [
             });
         }
         const { label, start_date, end_date } = req.body;
-        await SchoolYear.update({status:"closed"})
-
-
-        const schoolYear = await SchoolYear.create({
-            label,
-            start_date,
-            end_date,
-        });
+        const schoolYear = await sequelize.transaction(async (t) => {
+    await SchoolYear.update(
+        { status: "closed" },
+        { where: { status: "active" }, transaction: t }
+    );
+    return SchoolYear.create(
+        { label, start_date, end_date },
+        { transaction: t }
+    );
+});
 
         await createActivityLog(
             req,

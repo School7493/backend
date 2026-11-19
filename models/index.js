@@ -97,6 +97,22 @@ StudentGroup.belongsTo(SchoolYear, {
   foreignKey: 'school_year_id',
 });
 
+// StudentGroup associations
+StudentGroup.belongsTo(Student, {
+  foreignKey: "student_id"
+});
+
+StudentGroup.belongsTo(Group, {
+  foreignKey: "group_id"
+});
+
+Student.hasMany(StudentGroup, {
+  foreignKey: "student_id"
+});
+
+Group.hasMany(StudentGroup, {
+  foreignKey: "group_id"
+});
 
 
 

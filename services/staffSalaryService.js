@@ -2,6 +2,8 @@ const { Op } = require("sequelize");
 const Absence = require("../models/Absence");
 const StaffSalary = require("../models/StaffSalary");
 const { getPayPeriodBounds, getPayPeriodForDateOnly } = require("./salaryService");
+const Employ = require("../models/Employ");
+const Supervisor = require("../models/Supervisor");
 
 // Mapping entre le person_type de "Absence" (pointage) et celui de
 // "StaffSalary" (paie).
@@ -72,13 +74,23 @@ async function recalculateAbsencesForPerson(staffPersonType, person_id, month, y
 
     const { total, unjustified } = countAbsenceDays(records);
 
+    // Give the live row its base salary right away (as the payroll run does), but never
+    // rewrite it once the period has been finalized or paid.
+    const PersonModel = staffPersonType === "supervisor" ? Supervisor : Employ;
+    const [person, existing] = await Promise.all([
+        PersonModel.findByPk(person_id),
+        StaffSalary.findOne({ where: { person_type: staffPersonType, person_id, month, year } }),
+    ]);
+    const canSetBase = person && (!existing || existing.status === "en attente");
+
     await saveAbsenceCounts({
         person_type: staffPersonType,
         person_id,
         month,
         year,
         absence_days: total,
-        unjustified_absence_days: unjustified
+        unjustified_absence_days: unjustified,
+        base_salary: canSetBase ? parseFloat(person.salary || 0).toFixed(2) : undefined,
     });
 }
 

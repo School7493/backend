@@ -5,11 +5,9 @@ const sequelize = require("./config/db");
 const app = express();
 const appStart = require("./app");
 require("./models/index")
-const startScheduler = require("./jobs/scheduler");
 const startSalaryJob = require("./jobs/salaryJob");
 const { startMonthlySubscriptionJob } = require("./jobs/generateMonthlySubscriptions");
 const { startTrimesterSubscriptionJob  } = require("./jobs/generateTrimesterSubscriptions");
-const { startMarkUnpaidSubscriptionsJob  } = require("./jobs/MarkUnpaidSubscriptions");
 const { startGenerateMonthlyStaffSalariesJob } = require("./jobs/generateMonthlyStaffSalaries");
 const { startFinalizeStaffSalariesJob } = require("./jobs/finalizeStaffSalaries");
 const { startSummerBreakSubscriptionJob } = require("./jobs/summerBreakSubscriptionJob");

@@ -7,12 +7,25 @@ const SchoolYear = require("../models/SchoolYear");
 
 const JOB_NAME = "summer_break_subscriptions";
 
-const toDateOnly = (d) => d.toISOString().slice(0, 10); // 'YYYY-MM-DD'
+// Return the calendar date in Tunisia time.
+const toDateOnly = (date) => {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Africa/Tunis",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+    }).formatToParts(date);
 
+    const get = (type) => parts.find((p) => p.type === type).value;
+
+    return `${get("year")}-${get("month")}-${get("day")}`;
+};
+
+// Add days to a date-only string without local timezone conversion.
 const addDays = (dateStr, days) => {
-    const d = new Date(dateStr);
-    d.setDate(d.getDate() + days);
-    return toDateOnly(d);
+    const d = new Date(`${dateStr}T00:00:00.000Z`);
+    d.setUTCDate(d.getUTCDate() + days);
+    return d.toISOString().slice(0, 10);
 };
 
 // the school year whose break starts today (day after its end_date)

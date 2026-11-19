@@ -26,7 +26,7 @@ const StaffPayment = sequelize.define("staff_payment", {
         defaultValue: 0
     },
     status: {
-        type: DataTypes.ENUM("payé", "no payé", "en attente"),
+        type: DataTypes.ENUM("payé", "non payé", "en attente"),
         defaultValue: "en attente"
     }
 }, {

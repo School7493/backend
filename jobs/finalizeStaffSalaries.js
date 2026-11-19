@@ -5,7 +5,8 @@ const Supervisor = require("../models/Supervisor");
 const JobLog = require("../models/JobLog");
 const { recalculateAbsencesForPerson, STAFF_TYPE_TO_ABSENCE_TYPE } = require("../services/staffSalaryService");
 const { calculateMonthlySalaries } = require("../services/salaryService");
-const { getActiveSchoolYear } = require("../utils/schoolYear");
+const { Op } = require("sequelize");
+const SchoolYear = require("../models/SchoolYear");
 
 const JOB_NAME = "finalize_monthly_payments"; // renamed: now covers staff + teachers
 
@@ -40,13 +41,24 @@ async function hasRunThisMonth(period) {
 }
 
 async function runFinalizeStaffSalariesJob() {
-    const schoolYear = await getActiveSchoolYear();
-    if (!schoolYear) {
-        console.log(`[${JOB_NAME}] skipped: no active school year (past end_date or none defined)`);
-        return;
-    }
     const now = new Date();
     const { month, year, period } = closedPeriod(now);
+
+    // Check the school year containing the period being finalized,
+    // not the current execution date.
+    const periodDate = `${year}-${String(month).padStart(2, "0")}-15`;
+
+    const schoolYear = await SchoolYear.findOne({
+        where: {
+            start_date: { [Op.lte]: periodDate },
+            end_date: { [Op.gte]: periodDate },
+        },
+    });
+
+    if (!schoolYear) {
+        console.log(`[${JOB_NAME}] skipped: no school year contains ${period}`);
+        return;
+    }
 
     if (await hasRunThisMonth(period)) {
         console.log(`[${JOB_NAME}] already ran for ${period}, skipping`);
@@ -78,9 +90,9 @@ async function runFinalizeStaffSalariesJob() {
     console.log(`[${JOB_NAME}] staff: recalculated ${recalculated}, finalized ${finalized} as non payé for ${period}`);
 
     // --- Teachers ---
-    if (isWithinPayrollWindow(now)) {
+    if (isWithinPayrollWindow(new Date(year, month - 1, 15))) {
         const teacherResults = await calculateMonthlySalaries(month, year);
-        console.log(`[${JOB_NAME}] teachers: finalized ${teacherResults.length} as no payé for ${period}`);
+        console.log(`[${JOB_NAME}] teachers: finalized ${teacherResults.length} as non payé for ${period}`);
     } else {
         console.log(`[${JOB_NAME}] outside payroll window (Sept 15 - June 30), skipping teachers for ${period}`);
     }

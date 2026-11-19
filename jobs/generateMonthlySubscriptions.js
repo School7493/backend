@@ -10,7 +10,7 @@ const Zone = require("../models/Zone");
 const { getActiveSchoolYear } = require("../utils/schoolYear");
 
 // must match the name already stored in JobLog (id 30: generate_monthly_payments)
-const JOB_NAME = "generate_monthly_payments";
+const JOB_NAME = "generate_monthly_subscriptions";
 const MONTHLY_PLAN = "يدفع شهريًا";
 
 function currentPeriod(date = new Date()) {

@@ -8,7 +8,7 @@ const JobLog = require("../models/JobLog");
 const { getPayPeriodForDateOnly } = require("../services/salaryService");
 const { getActiveSchoolYear } = require("../utils/schoolYear");
 
-const JOB_NAME = "generate_monthly_payments"; // renamed: now covers staff + teachers
+const JOB_NAME = "generate_monthly_staff_salaries"; // renamed: now covers staff + teachers
 
 const STAFF_TYPES = [
     { person_type: "employ", PersonModel: Employ },
