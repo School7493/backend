@@ -36,5 +36,9 @@ const Employ  = sequelize.define("employs",{
         type:DataTypes.BOOLEAN,
         defaultValue:false
     },
+    joined_date:{
+        type: DataTypes.DATEONLY,
+        allowNull: true,
+    }
 })
 module.exports = Employ

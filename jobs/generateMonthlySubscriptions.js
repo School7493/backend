@@ -95,15 +95,31 @@ async function runMonthlySubscriptionJob() {
         Zone.findAll(),
     ]);
 
+    // Rows that ALREADY exist for this period (e.g. created in advance by an overflow payment).
+    // They must not be duplicated, and their payments must not be reset.
+    const existingSubscriptionByStudent = new Map();
     const lastSubscriptionByStudent = new Map();
     for (const sub of allSubscriptions) {
+        if (sub.period === period) {
+            if (!existingSubscriptionByStudent.has(sub.student_id)) {
+                existingSubscriptionByStudent.set(sub.student_id, sub);
+            }
+            continue; // the previous month's row is the pricing reference, not this one
+        }
         if (!lastSubscriptionByStudent.has(sub.student_id)) {
             lastSubscriptionByStudent.set(sub.student_id, sub);
         }
     }
 
+    const existingTransportByStudent = new Map();
     const lastTransportByStudent = new Map();
     for (const tr of allTransports) {
+        if (tr.period === period) {
+            if (!existingTransportByStudent.has(tr.student_id)) {
+                existingTransportByStudent.set(tr.student_id, tr);
+            }
+            continue;
+        }
         if (!lastTransportByStudent.has(tr.student_id)) {
             lastTransportByStudent.set(tr.student_id, tr);
         }
@@ -113,6 +129,7 @@ async function runMonthlySubscriptionJob() {
     const zoneById = new Map(zones.map(z => [z.id, z]));
 
     let created = 0;
+    let updatedExisting = 0;
     let createdTransports = 0;
     let skipped = 0;
     let errors = 0;
@@ -120,6 +137,8 @@ async function runMonthlySubscriptionJob() {
     for (const student of students) {
         const lastSubscription = lastSubscriptionByStudent.get(student.id);
         const lastTransport = lastTransportByStudent.get(student.id);
+        const existingSubscription = existingSubscriptionByStudent.get(student.id) || null;
+        const existingTransport = existingTransportByStudent.get(student.id) || null;
 
         // ---- Tuition: monthly plan only ----
         // is_active=false + deactivated_by_break=true means paused for a holiday -> still regenerate.
@@ -145,8 +164,13 @@ async function runMonthlySubscriptionJob() {
         }
 
         // ---- Transport: ANY plan (monthly / trimestral / annual), same pause/cancel rule ----
+        // Skipped when this period already has a transport row.
         let transportAmount = null;
-        if (lastTransport && (lastTransport.is_active || lastTransport.deactivated_by_break)) {
+        if (
+            !existingTransport &&
+            lastTransport &&
+            (lastTransport.is_active || lastTransport.deactivated_by_break)
+        ) {
             try {
                 transportAmount = transportAmountFromCache(lastTransport.zone_id, zoneById);
             } catch (err) {
@@ -163,20 +187,36 @@ async function runMonthlySubscriptionJob() {
         // Everything for this student is created together or not at all.
         const t = await sequelize.transaction();
         try {
-            let subscription = null;
+            let subscription = existingSubscription;
 
             if (tuitionAmount !== null) {
-                subscription = await Subscription.create({
-                    amount: tuitionAmount,
-                    payment_type: MONTHLY_PLAN,
-                    status: "non payé",
-                    student_id: student.id,
-                    promotion: lastSubscription.promotion || null,
-                    is_take_book: lastSubscription.is_take_book,
-                    is_take_uniform: lastSubscription.is_take_uniform,
-                    period,
-                }, { transaction: t });
-                created++;
+                if (existingSubscription) {
+                    // Already created in advance: never create a second one.
+                    // Keep paid_amount and status. Only fill the missing fields.
+                    const patch = {
+                        promotion: lastSubscription.promotion || null,
+                        is_take_book: lastSubscription.is_take_book,
+                        is_take_uniform: lastSubscription.is_take_uniform,
+                    };
+                    // change the amount only if nothing was paid on it yet
+                    if (Number(existingSubscription.paid_amount ?? 0) === 0) {
+                        patch.amount = tuitionAmount;
+                    }
+                    await existingSubscription.update(patch, { transaction: t });
+                    updatedExisting++;
+                } else {
+                    subscription = await Subscription.create({
+                        amount: tuitionAmount,
+                        payment_type: MONTHLY_PLAN,
+                        status: "non payé",
+                        student_id: student.id,
+                        promotion: lastSubscription.promotion || null,
+                        is_take_book: lastSubscription.is_take_book,
+                        is_take_uniform: lastSubscription.is_take_uniform,
+                        period,
+                    }, { transaction: t });
+                    created++;
+                }
             }
 
             if (transportAmount !== null) {
@@ -185,7 +225,7 @@ async function runMonthlySubscriptionJob() {
                     status: "non payé",
                     period,
                     student_id: student.id,
-                    // only linked when a tuition subscription is created this month
+                    // linked to the existing or new subscription of this period
                     subscription_id: subscription ? subscription.id : null,
                     zone_id: lastTransport.zone_id,
                 }, { transaction: t });
@@ -202,8 +242,8 @@ async function runMonthlySubscriptionJob() {
     }
 
     console.log(
-        `[${JOB_NAME}] created ${created} subscriptions, ${createdTransports} transports, ` +
-        `skipped ${skipped}, errors ${errors} for ${period}`
+        `[${JOB_NAME}] created ${created} subscriptions, updated ${updatedExisting} existing, ` +
+        `${createdTransports} transports, skipped ${skipped}, errors ${errors} for ${period}`
     );
 }
 

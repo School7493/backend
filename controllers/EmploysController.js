@@ -4,6 +4,7 @@ const Employ = require("../models/Employ");
 const ActivityLog = require("../models/ActivityLog");
 const { User } = require("../models");
 const StaffSalary = require("../models/StaffSalary");
+const { getPayPeriod } = require("../utils/period");
 
 const getUser = async (req) => {
         const userId = req.userId;
@@ -54,9 +55,9 @@ exports.createEmploys = [
 
     body("role")
         .isIn([
-            "سائق",
-            "عامل(ة) نظافة",
-            "عون أمن"
+            'سائق',
+            'عامل(ة) نظافة',
+            'حارس',
         ])
         .withMessage("Invalid employ role."),
 
@@ -104,21 +105,24 @@ exports.createEmploys = [
                 salary,
                 date_deposited,
                 status,
-                role
+                role,
+                joined_date: new Date(), // always today, not sent by the client
             });
 
-             const now = new Date();
-const currentMonth = now.getMonth() + 1;
-const currentYear = now.getFullYear();
-await StaffSalary.create({
-    person_type: "employ",
-    person_id: employ.id,
-    month: currentMonth,
-    year: currentYear,
-    base_salary: employ.salary,
-    absence_days: 0,
-    total_salary: employ.salary
-});
+           const { month, year, daysInPeriod, payDate } = getPayPeriod();
+
+            await StaffSalary.create({
+                person_type: "employ",
+                person_id: employ.id,
+                month,
+                year,
+                base_salary: salary,
+                absence_days: 0,
+                unjustified_absence_days: 0,
+                worked_days: null,
+                days_in_month: daysInPeriod,
+                pay_date: payDate,
+            });
 
             // Activity log
             await ActivityLog.create({

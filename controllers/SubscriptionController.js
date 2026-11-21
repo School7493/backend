@@ -116,6 +116,38 @@ exports.getAllSubscription = async (req, res) => {
       distinct: true,
     });
 
+    // ---- full payment history per student (one payment can cover several months)
+    const studentIds = [...new Set(rows.map((r) => r.student_id))];
+    const historyByStudent = {};
+
+    if (studentIds.length > 0) {
+      const allSubs = await Subscription.findAll({
+        where: { student_id: studentIds },
+        attributes: ["id", "student_id", "period"],
+        raw: true,
+      });
+      const subInfo = new Map(allSubs.map((s) => [s.id, s]));
+
+      const allPayments = await StudentPayment.findAll({
+        where: { subscription_id: allSubs.map((s) => s.id) },
+        attributes: ["id", "subscription_id", "amount", "type", "date"],
+        order: [
+          ["date", "DESC"],
+          ["id", "DESC"],
+        ],
+        raw: true,
+      });
+
+      allPayments.forEach((p) => {
+        const info = subInfo.get(p.subscription_id);
+        if (!info) return;
+        (historyByStudent[info.student_id] ||= []).push({
+          ...p,
+          subscription_period: info.period, // period the payment was recorded on
+        });
+      });
+    }
+
     // ---- keep only the transport rows that belong to the subscription's period
     // (only for monthly keys "YYYY-MM"; quarterly/yearly keep all transport rows)
     const subscriptions = rows.map((row) => {
@@ -124,6 +156,7 @@ exports.getAllSubscription = async (req, res) => {
       if (isMonthly && Array.isArray(sub.transport)) {
         sub.transport = sub.transport.filter((t) => t.period === sub.period);
       }
+      sub.payment_history = historyByStudent[sub.student_id] || [];
       return sub;
     });
 
@@ -164,6 +197,7 @@ exports.getAllSubscription = async (req, res) => {
     return res.json({
       message: "subscriptions retrieved successfully.",
       // each row now includes paid_amount and remaining_amount (virtual)
+      // and payment_history (all payments of the student, newest first)
       subscriptions,
       pagination: { page, limit, total: count, totalPages: Math.max(Math.ceil(count / limit), 1) },
       stats: {
@@ -184,6 +218,12 @@ exports.getAllSubscription = async (req, res) => {
 
 const round3 = (n) => Math.round(Number(n) * 1000) / 1000;
 
+// types with no "next month" row: payment is capped at the remaining
+const LUMP_TYPES = ["يدفع سنويًا", "يدفع بالثلاثي"];
+
+// safety limit on how many following months one payment can reach
+const MAX_OVERFLOW_MONTHS = 12;
+
 class HttpError extends Error {
   constructor(status, message) {
     super(message);
@@ -191,7 +231,62 @@ class HttpError extends Error {
   }
 }
 
-// Shared logic: records a payment of `payAmount` on a subscription
+// "2026-12" -> "2027-01"
+function getNextPeriod(period) {
+  const [year, month] = String(period).split("-").map(Number);
+  if (!year || !month) throw new HttpError(400, "invalid period on subscription.");
+  return month === 12
+    ? `${year + 1}-01`
+    : `${year}-${String(month + 1).padStart(2, "0")}`;
+}
+
+// Applies `amount` to one subscription row (NO StudentPayment here).
+async function applyToRow(row, amount, t) {
+  const total = round3(row.amount);
+  const newPaid = round3(round3(row.paid_amount ?? 0) + amount);
+  const newRemaining = Math.max(round3(total - newPaid), 0);
+  const isFullyPaid = newRemaining <= 0;
+
+  await row.update(
+    {
+      paid_amount: newPaid,
+      // only keep this line if remaining_amount is a real column (not a virtual getter)
+      remaining_amount: newRemaining,
+      status: isFullyPaid ? "payé" : "partially_paid",
+    },
+    { transaction: t }
+  );
+
+  return { newPaid, newRemaining, isFullyPaid };
+}
+
+// Finds the row of `period` for the same student, or creates it from `source`.
+async function findOrCreateRow(source, period, t) {
+  const existing = await Subscription.findOne({
+    where: { student_id: source.student_id, period },
+    transaction: t,
+    lock: t.LOCK.UPDATE,
+  });
+  if (existing) return existing;
+
+  // add here any other required column of your Subscription model
+  return Subscription.create(
+    {
+      student_id: source.student_id,
+      period,
+      amount: source.amount,
+      payment_type: source.payment_type,
+      paid_amount: 0,
+      status: "non payé",
+    },
+    { transaction: t }
+  );
+}
+
+// Shared logic: records a payment of `payAmount` on a subscription.
+// Monthly rows: anything above the remaining overflows to the next month(s).
+// Yearly / trimester rows: capped at the remaining.
+// Always ONE StudentPayment row for the whole payment.
 async function applyPayment({ id, payAmount, user }) {
   return sequelize.transaction(async (t) => {
     // Lock the row so two requests can't pay at the same time
@@ -212,6 +307,7 @@ async function applyPayment({ id, payAmount, user }) {
     const total = round3(subscription.amount);
     const alreadyPaid = round3(subscription.paid_amount ?? 0);
     const remaining = round3(total - alreadyPaid);
+    const isLump = LUMP_TYPES.includes(subscription.payment_type);
 
     // payAmount === null means "pay everything that remains"
     const amountToPay = payAmount === null ? remaining : round3(payAmount);
@@ -219,33 +315,58 @@ async function applyPayment({ id, payAmount, user }) {
     if (!Number.isFinite(amountToPay) || amountToPay <= 0) {
       throw new HttpError(400, "invalid amount.");
     }
-    if (amountToPay > remaining) {
+    if (isLump && amountToPay > remaining) {
       throw new HttpError(400, `amount exceeds remaining (${remaining}).`);
     }
 
-    const newPaid = round3(alreadyPaid + amountToPay);
-    const newRemaining = round3(total - newPaid);
-    const isFullyPaid = newRemaining <= 0;
+    // ---- 1) current row: up to its remaining
+    const toCurrent = Math.min(amountToPay, remaining);
+    let overflow = round3(amountToPay - toCurrent);
 
-    await subscription.update(
-      {
-        paid_amount: newPaid,
-        // only keep this line if remaining_amount is a real column (not a virtual getter)
-        remaining_amount: newRemaining,
-        status: isFullyPaid ? "payé" : "partially_paid",
-      },
-      { transaction: t }
-    );
+    const current = await applyToRow(subscription, toCurrent, t);
 
+    // ---- 2) overflow: next month(s), rows are created when missing
+    const overflowApplied = [];
+    let cursor = subscription.period;
+    let steps = 0;
+
+    while (overflow > 0) {
+      if (++steps > MAX_OVERFLOW_MONTHS) {
+        throw new HttpError(400, "amount is too large to spread over the next months.");
+      }
+
+      cursor = getNextPeriod(cursor);
+
+      const nextRow = await findOrCreateRow(subscription, cursor, t);
+      const nextRemaining = round3(round3(nextRow.amount) - round3(nextRow.paid_amount ?? 0));
+
+      // already fully paid month: skip to the following one
+      if (nextRow.status === "payé" || nextRemaining <= 0) continue;
+
+      const part = Math.min(overflow, nextRemaining);
+      const r = await applyToRow(nextRow, part, t);
+
+      overflowApplied.push({
+        id: nextRow.id,
+        period: nextRow.period,
+        amount: part,
+        status: r.isFullyPaid ? "payé" : "partially_paid",
+      });
+      overflow = round3(overflow - part);
+    }
+
+    // ---- 3) ONE StudentPayment for the whole amount, on the paid subscription
     await StudentPayment.create(
       {
         amount: amountToPay,
         date: new Date(),
         subscription_id: subscription.id,
+        // type: "subscription", // add this if the column has no default value
       },
       { transaction: t }
     );
 
+    // ---- 4) activity log (one entry for the whole operation)
     const student = await Student.findByPk(subscription.student_id, {
       attributes: ["id", "name", "last_name"],
       transaction: t,
@@ -255,15 +376,22 @@ async function applyPayment({ id, payAmount, user }) {
       ? `${student.name} ${student.last_name}`
       : `Subscription #${subscription.id}`;
 
+    let description = current.isFullyPaid
+      ? `تم دفع اشتراك التلميذ ${studentName} بمبلغ ${toCurrent}`
+      : `تم دفع جزء من اشتراك التلميذ ${studentName} بمبلغ ${toCurrent} (المتبقي ${current.newRemaining})`;
+
+    if (overflowApplied.length > 0) {
+      const extra = overflowApplied.map((o) => `${o.period}: ${o.amount}`).join("، ");
+      description += ` — الزائد احتُسب على الأشهر القادمة (${extra})`;
+    }
+
     await ActivityLog.create(
       {
         action: "pay",
         entity_type: "subscription",
         entity_id: subscription.id,
         entity_name: studentName,
-        description: isFullyPaid
-          ? `تم دفع اشتراك التلميذ ${studentName} بمبلغ ${amountToPay}`
-          : `تم دفع جزء من اشتراك التلميذ ${studentName} بمبلغ ${amountToPay} (المتبقي ${newRemaining})`,
+        description,
         user_name: `${user.name} ${user.last_name}`,
         user_role: user.role,
         user_id: user.id,
@@ -271,7 +399,12 @@ async function applyPayment({ id, payAmount, user }) {
       { transaction: t }
     );
 
-    return { paid_amount: newPaid, remaining_amount: newRemaining, status: subscription.status };
+    return {
+      paid_amount: current.newPaid,
+      remaining_amount: current.newRemaining,
+      status: subscription.status,
+      overflow_applied: overflowApplied,
+    };
   });
 }
 

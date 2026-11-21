@@ -6,6 +6,7 @@ const bcrypt = require("bcryptjs");
 const ActivityLog = require("../models/ActivityLog");
 const StaffSalary = require("../models/StaffSalary");
 const { getPayPeriod } = require("../utils/period");
+const { Op } = require("sequelize");
 
 const getUser = async (req) => {
         const userId = req.userId;
@@ -48,24 +49,19 @@ exports.createSupervisors = [
             return true;
         }),
 
-
     body("status")
         .isIn(['نشط', 'في إجازة', 'غير نشط'])
         .withMessage("Invalid teacher status."),
+
     body("role")
         .isIn([
-             "قيم(ة)",
+            "قيم(ة)",
             "كاتب(ة)",
             "مقتصد",
             "مدير(ة)",
             "نائب مدير"
         ])
-        .withMessage("Invalid teacher status."),
-    body("joined_date")
-    .notEmpty()
-    .withMessage("Joined date is required")
-    .isISO8601()
-    .withMessage("Joined date must be a valid date"),
+        .withMessage("Invalid role."),
 
     async (req, res) => {
         try {
@@ -77,7 +73,8 @@ exports.createSupervisors = [
                     errors: errors.array(),
                 });
             }
-            const user = await getUser(req)
+
+            const user = await getUser(req);
             const {
                 name,
                 last_name,
@@ -88,12 +85,48 @@ exports.createSupervisors = [
                 role,
                 email,
                 password,
-                joined_date
             } = req.body;
-            const cinSupervisor = await Supervisor.findOne({where: {cin}});
-            if(cinSupervisor){
+
+            const isAdminRole =
+                role === "مقتصد" || role === "مدير(ة)" || role === "نائب مدير";
+
+            if (isAdminRole && (!email || !password)) {
                 return res.status(400).json({
-                    message: "cin exist",
+                    message: "Email and password are required for this role.",
+                });
+            }
+
+            // Check CIN and email together so both errors can be returned at once
+            const duplicates = {};
+
+            if (cin) {
+                const cinSupervisor = await Supervisor.findOne({ where: { cin } });
+                if (cinSupervisor) duplicates.cin = true;
+            }
+
+            if (isAdminRole) {
+                const emailUser = await User.findOne({ where: { email } });
+                if (emailUser) duplicates.email = true;
+            }
+
+            if (duplicates.cin || duplicates.email) {
+                let message = "cin exist";
+                if (duplicates.cin && duplicates.email) message = "cin and email exist";
+                else if (duplicates.email) message = "email exist";
+
+                return res.status(400).json({ message, duplicates });
+            }
+
+            let admins = null;
+
+            if (isAdminRole) {
+                const passwordHash = await bcrypt.hash(password, 10);
+                admins = await User.create({
+                    name,
+                    email,
+                    last_name,
+                    password: passwordHash,
+                    role,
                 });
             }
 
@@ -104,40 +137,26 @@ exports.createSupervisors = [
                 phone,
                 salary,
                 status,
-                role
+                role,
+                user_id: admins?.id ?? null,
+                joined_date: new Date(), // always today, not sent by the client
             });
-            if(role === "مقتصد" || role === "مدير(ة)" || role === "نائب مدير"){
-                const passwordHash = await bcrypt.hash(password,10)
-                await User.create({
-                name,
-                email,
-                last_name,
-                password:passwordHash,
-                role
-                })
-            }
- const { month, year, periodStart, periodEnd, daysInPeriod, payDate } =
-        getPayPeriod();
-      const joinedDate = new Date(joined_date);
 
-      let workedDays = null;
-      if (joinedDate >= periodStart && joinedDate <= periodEnd) {
-        workedDays =
-          Math.round((periodEnd - joinedDate) / (1000 * 60 * 60 * 24)) + 1;
-      }
+            // Pay period: 20th -> 20th, pay day always the 10th
+            const { month, year, daysInPeriod, payDate } = getPayPeriod();
 
-      const staffSalary = await StaffSalary.create({
-        person_type: "supervisor",
-        person_id: supervisor.id,
-        month,
-        year,
-        base_salary: salary,
-        absence_days: 0,
-        unjustified_absence_days: 0,
-        worked_days: workedDays,
-        days_in_month: daysInPeriod,
-        pay_date: payDate,
-      });
+            await StaffSalary.create({
+                person_type: "supervisor",
+                person_id: supervisor.id,
+                month,
+                year,
+                base_salary: salary,
+                absence_days: 0,
+                unjustified_absence_days: 0,
+                worked_days: null, // new supervisor = full current period, no proration
+                days_in_month: daysInPeriod,
+                pay_date: payDate,
+            });
 
             await ActivityLog.create({
                 action: "create",
@@ -156,7 +175,7 @@ exports.createSupervisors = [
             });
 
         } catch (error) {
-            console.error("Create teacher error:", error);
+            console.error("Create supervisor error:", error);
 
             return res.status(500).json({
                 message: "Server error.",
@@ -168,7 +187,15 @@ exports.createSupervisors = [
 exports.getAllSupervisors = async (req, res) => {
     try {
         const supervisors = await Supervisor.findAll({
-            where:{is_deleted:false},
+            where: { is_deleted: false },
+            include: [
+                {
+                    model: User,
+                    as: "user",
+                    attributes: ["id", "email"], // never include password
+                    required: false,             // LEFT JOIN: supervisors without a user still appear
+                },
+            ],
             order: [["createdAt", "DESC"]],
         });
 
@@ -176,13 +203,9 @@ exports.getAllSupervisors = async (req, res) => {
             message: "Supervisors retrieved successfully.",
             supervisors,
         });
-
     } catch (error) {
         console.error("Get Supervisors error:", error);
-
-        return res.status(500).json({
-            message: "Server error.",
-        });
+        return res.status(500).json({ message: "Server error." });
     }
 };
 
@@ -263,10 +286,11 @@ exports.updateSupervisor = [
 
     body("role")
         .isIn([
-            "قيم الساحة",
-            "مراقب الدراسة",
-            "مسؤول الانضباط",
-            "متصرف"
+            'مقتصد',
+            'مدير(ة)',
+            'نائب مدير',
+            'قيم(ة)',
+            'كاتب(ة)',
         ])
         .withMessage("Invalid supervisor role."),
 

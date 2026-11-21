@@ -38,5 +38,13 @@ const Supervisor  = sequelize.define("supervisors",{
         type:DataTypes.BOOLEAN,
         defaultValue:false
     },
+    user_id: {
+        type: DataTypes.BIGINT,
+        allowNull: true,
+    },
+    joined_date:{
+        type: DataTypes.DATEONLY,
+        allowNull: true,
+    }
 })
 module.exports = Supervisor
